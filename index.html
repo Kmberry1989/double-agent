@@ -63,7 +63,7 @@
     <li><b>Click</b> fire &nbsp; <b>R</b> reload &nbsp; <b>1</b> pistol &nbsp; <b>2</b> rifle &nbsp; <b>L</b> toggle player loadout (white / black set) &nbsp; <b>E</b> interact / pick up intel &nbsp; <b>F</b> silent takedown from behind an unaware guard</li>
   </ul>
   <p class="warn">Note on controls: the brief asked for both “F aim” and “F takedown”. This build resolves the clash by using right-mouse for aim and F only for takedown, so the two actions cannot conflict. See README for the full note.</p>
-  <p class="small">Models: guards use enemy-terror1–4.fbx, player weapons are the white_ / black_ sets (press L to toggle sets), and Agent.fbx — your player model — replaces the capsule automatically once you place it in assets/. Until Agent.fbx is uploaded there, the player is a procedural capsule. The 62 Mixamo FBX clips in assets/animations/ are mapped in assets/animation-manifest.json and will play on Agent.fbx once it is present. They are not claimed to be playing on the capsule.</p>
+  <p class="small">Models: guards use enemy-terror1–4.fbx, player weapons are the white_ / black_ sets (press L to toggle sets), and Agent_Kyle.fbx is your player model. The 62 Mixamo FBX clips in assets/animations/ are mapped in assets/animation-manifest.json and will play on Agent_Kyle.fbx once it is present. They are not claimed to be playing on the capsule.</p>
   <button id="startBtn">Click to infiltrate</button>
   <p class="small">Click locks the mouse. Press Esc to release it. If you die or win, use the button on the end screen to restart.</p>
 </div></div>
@@ -127,7 +127,7 @@ window.__doubleAgentFBX = { ANIM_MAP, tryLoadFBXAnimations, fbxClips };
 // - Every loader below has an onError fallback that keeps the existing
 //   procedural capsule / box gun, so a missing or bad file never breaks
 //   the game. The ONLY file that may legitimately be missing is
-//   assets/Agent.fbx (not yet uploaded to assets/).
+//   assets/Agent_Kyle.fbx (present in assets/, 1.6 MB).
 const gltfLoader = new GLTFLoader();
 function normalizeCharacter(obj, targetHeight, yawOffset){
   obj.traverse((o)=>{ if (o.isMesh) o.castShadow = true; });
@@ -215,15 +215,21 @@ let ammoInMag = 12, lastShot = 0, reloadUntil = 0, currentAnim = 'idle';
 // rpg.glb to the player — those belong to guards.
 let agentModel = null;
 const capsuleParts = [torso, head, armL, armR];
-fbxLoader.load('assets/Agent.fbx', (obj)=>{
-  if (!normalizeCharacter(obj, 2.2, Math.PI)) return;
-  capsuleParts.forEach((p)=>{ p.visible = false; });
-  agentModel = obj; player.add(obj);
-  tryLoadFBXAnimations(obj);
-  console.info('[double-agent] Agent.fbx loaded as player model');
-}, undefined, ()=>{
-  console.info('[double-agent] assets/Agent.fbx not found — using procedural capsule for the player. Place Agent.fbx in assets/ to replace it.');
-});
+// Player model is Agent_Kyle.fbx (user-corrected filename; Agent.fbx kept
+// only as a legacy fallback). No model file is invented here.
+function loadPlayerModel(file){
+  fbxLoader.load('assets/' + file, (obj)=>{
+    if (!normalizeCharacter(obj, 2.2, Math.PI)) return;
+    capsuleParts.forEach((p)=>{ p.visible = false; });
+    agentModel = obj; player.add(obj);
+    tryLoadFBXAnimations(obj);
+    console.info('[double-agent] Player model loaded:', file);
+  }, undefined, ()=>{
+    if (file === 'Agent_Kyle.fbx') loadPlayerModel('Agent.fbx');
+    else console.info('[double-agent] No player model found (Agent_Kyle.fbx / Agent.fbx) — using procedural capsule for the player.');
+  });
+}
+loadPlayerModel('Agent_Kyle.fbx');
 let playerLoadout = 'white'; // 'white' | 'black' — two distinct player sets
 const PLAYER_LOADOUTS = {
   white: { pistol: 'white_glock.glb', rifle: 'white_mp5k.glb' },
@@ -571,7 +577,7 @@ function animate(){
   document.getElementById('stateText').textContent = anyAlert?'ALERT':(detection>=30?'CAUTION':(detection>0?'SUSPICIOUS':'UNDETECTED'));
   document.getElementById('weaponText').textContent = (weapon==='pistol'?'Pistol':'Rifle') + ' · ' + playerLoadout + ' set';
   document.getElementById('ammoText').textContent = 'Ammo: '+ammoInMag+' / '+weapons[weapon].max + (now<reloadUntil?' (reloading)':'');
-  document.getElementById('animText').textContent = 'Anim: '+currentAnim+' ('+(agentModel ? 'Agent.fbx' : 'procedural capsule')+') — FBX ready: '+(ANIM_MAP[currentAnim]||'—');
+  document.getElementById('animText').textContent = 'Anim: '+currentAnim+' ('+(agentModel ? 'Agent_Kyle.fbx' : 'procedural capsule')+') — FBX ready: '+(ANIM_MAP[currentAnim]||'—');
   document.getElementById('posText').textContent = 'Intel: '+intel+'/3  •  X '+player.position.x.toFixed(0)+' Z '+player.position.z.toFixed(0);
   drawMinimap();
   renderer.render(scene,camera);

@@ -108,19 +108,17 @@ file, for example:
 - sneak → Sneaking_Forward.fbx, crawl → Crawling.fbx, cover → Taking_Cover_Idle.fbx
 - drive → Driving.fbx, enterCar → Entering_Car.fbx, exitCar → Exiting_Car.fbx
 
-**Known limitation, stated plainly:** until `assets/Agent.fbx` is
-uploaded, the player character you see is a procedural capsule
-(bob, arm swing, crouch squash). The FBX clips are **not** playing
-on that capsule, and no Agent/KYLE model file is included or
-invented in this repo. `index.html` contains a loader
-(`tryLoadFBXAnimations`) that will load the matching FBX clip when
-`Agent.fbx` is present; with no rigged model present it falls back
-cleanly to the capsule. The clips were made on the Mixamo "KYLE"
-rig — if `Agent.fbx` is that same rig they should apply, and if
+**Player model, stated plainly:** `assets/Agent_Kyle.fbx` (1.6 MB) is
+now in the repo and the game loads it on start, replacing the
+procedural capsule (bob, arm swing, crouch squash) — with a clean
+fallback to the capsule only if that file fails to load. No model
+file was invented. `index.html` contains a loader
+(`tryLoadFBXAnimations`) that feeds the matching FBX clip to
+Agent_Kyle.fbx. The clips were made on the Mixamo "KYLE"
+rig — if `Agent_Kyle.fbx` is that same rig they should apply, and if
 not, playback will look wrong in-game and the rig mismatch is the
-thing to check. The HUD shows the FBX file that *would*
-correspond to the current action ("FBX ready: …") — that is a
-mapping label, not playback, until Agent.fbx is present.
+thing to check. The HUD shows whether the current character is
+Agent_Kyle.fbx or the capsule fallback.
 
 ## Asset map — which real models are wired in
 
@@ -130,7 +128,7 @@ or `black_` prefix are for the ENEMIES. The player's weapons are the
 
 | Role | File(s) | How it is used |
 |---|---|---|
-| Player character | `assets/Agent.fbx` | **Not yet in the repo.** The game tries to load it on start; if it is present it replaces the procedural capsule, is normalised to ~2.2 m tall with feet on the ground, and the Mixamo animation clips are fed to it via `tryLoadFBXAnimations`. If it is missing, the game falls back cleanly to the capsule — no error screen, no broken game. **To make it appear: place the real `Agent.fbx` file at `assets/Agent.fbx` and reload. No code change is needed, and no file was invented in its place.** |
+| Player character | `assets/Agent_Kyle.fbx` | **Present in the repo (1.6 MB).** The game tries to load it on start; if it is present it replaces the procedural capsule, is normalised to ~2.2 m tall with feet on the ground, and the Mixamo animation clips are fed to it via `tryLoadFBXAnimations`. If it is missing, the game falls back cleanly to the capsule — no error screen, no broken game. **To make it appear: the real `Agent_Kyle.fbx` file is at `assets/Agent_Kyle.fbx` and reload. No code change is needed, and no file was invented in its place.** |
 | Guards 1–5 | `assets/enemy-terror1.fbx`, `enemy-terror2.fbx`, `enemy-terror3.fbx`, `enemy-terror4.fbx`, then terror1 again for guard 5 | Each guard's red capsule body/head is hidden and the FBX model is added to the same guard group, so position, yaw, vision cone, patrols and AI are unchanged. If a guard's FBX fails to load, that guard keeps its capsule. |
 | Player loadout 1 (white set) | `assets/white_glock.glb` (pistol, key 1), `assets/white_mp5k.glb` (rifle, key 2) | Loaded with GLTFLoader, attached to the player group, toggled by weapon. Press **L** to switch to the black set. |
 | Player loadout 2 (black set) | `assets/black_glock_threaded.glb` (pistol), `assets/black_mp5k.glb` (rifle) | Same as above, for the black set. |
@@ -153,7 +151,7 @@ rotation for weapons).
 
 ## Known gaps / simplifications
 
-- `Agent.fbx` is not in the repo yet, so until Kyle uploads it to
+- `Agent_Kyle.fbx` is now in the repo, so the player loader uses it;
   `assets/` the player is still a procedural capsule (guards and
   weapons above are real models, with capsule / box-gun fallbacks).
   No model file was invented to fill that gap.
@@ -179,4 +177,4 @@ rotation for weapons).
 - `assets/enemy-terror1–4.fbx` — real guard models (see Asset map)
 - `assets/white_*.glb` / `assets/black_*.glb` — player weapon sets
 - `assets/mp5k.glb` (unprefixed) and other unprefixed GLBs — enemy weapons / props
-- `assets/Agent.fbx` — **missing until Kyle uploads it**; player model, loaded with fallback to capsule (see Asset map)
+- `assets/Agent_Kyle.fbx` — **present**; player model, loaded with fallback to capsule (see Asset map)
