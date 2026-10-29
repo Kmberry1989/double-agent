@@ -48,6 +48,13 @@ line of sight — use them.
 | Interact / pick up intel / exfil | E |
 | Silent takedown | F, from behind an unaware guard, within ~2.8 m |
 | Toggle player loadout (white / black set) | L |
+| Punch (one-shot) | Q |
+| Kick (one-shot) | X |
+| Wave (one-shot) | G |
+| Talk (one-shot) | T |
+| Talk on phone (one-shot) | N |
+| Male crouch pose — hold, press again to release | V |
+| Female crouch pose — hold, press again to release | B |
 
 Silent start is preserved: the player spawns at (-38, 38) in a walled
 alcove in the southwest corner, facing northeast. The nearest guard
@@ -81,8 +88,9 @@ right-mouse = aim, F = takedown only.
 
 ## HUD and minimap
 
-Health bar, detection bar, ammo, current weapon, current procedural
-animation state, intel count and position are shown on screen. The
+Health bar, detection bar, ammo, current weapon, current FBX
+animation state (or procedural capsule fallback), intel count and
+position are shown on screen. The
 minimap (top right) shows walls, guards (yellow = patrol/suspicious,
 red = alert), cameras (orange), uncollected intel (yellow) and the
 exfil gate (green). You are the green arrow.
@@ -109,16 +117,101 @@ file, for example:
 - drive → Driving.fbx, enterCar → Entering_Car.fbx, exitCar → Exiting_Car.fbx
 
 **Player model, stated plainly:** `assets/Agent_Kyle.fbx` (1.6 MB) is
-now in the repo and the game loads it on start, replacing the
+in the repo and the game loads it on start, replacing the
 procedural capsule (bob, arm swing, crouch squash) — with a clean
-fallback to the capsule only if that file fails to load. No model
-file was invented. `index.html` contains a loader
-(`tryLoadFBXAnimations`) that feeds the matching FBX clip to
-Agent_Kyle.fbx. The clips were made on the Mixamo "KYLE"
+fallback to the capsule only if that file or its clips fail to load.
+No model file was invented. The clips were made on the Mixamo "KYLE"
 rig — if `Agent_Kyle.fbx` is that same rig they should apply, and if
 not, playback will look wrong in-game and the rig mismatch is the
 thing to check. The HUD shows whether the current character is
-Agent_Kyle.fbx or the capsule fallback.
+Agent_Kyle.fbx with FBX playback, or the procedural capsule fallback.
+
+## Poses & animations — how playback actually works
+
+The player now uses a real `THREE.AnimationMixer` on Agent_Kyle.fbx,
+not the old stub. The capsule bob/arm-swing code runs only when no
+FBX rig is playing, and it never squashes the real model
+(`player.scale.y` is left at 1 while FBX is playing).
+
+**Preloaded first (core locomotion, on model load):**
+idle → Standing_Idle.fbx, walk → Walking.fbx, run → Running.fbx,
+sprint → Standing_Sprint_Forward.fbx, crouchIdle → Crouch_Idle.fbx,
+crouchWalk → Crouched_Walking.fbx, sneak → Sneaking_Forward.fbx.
+The capsule stays visible until idle is ready, so there is no
+T-pose flash; if idle fails (missing file or rig mismatch) the game
+restores the capsule and keeps playing procedurally.
+
+**Lazy-loaded on demand (first use only, then cached):**
+aimIdle → Rifle_Aiming_Idle.fbx, aimWalk →
+Walking_While_Aiming_Rifle.fbx, aimPistol → Pistol_Aim.fbx,
+fireRifle → Firing_Rifle.fbx, fireRifleCrouch →
+Firing_Rifle_Crouch_Walking.fbx, reloadRifle → Reloading_Rifle.fbx,
+firePistol → Shooting_Pistol.fbx, reloadPistol →
+Reloading_Walking.fbx (generic gun reload — no pistol-specific
+reload was found), jump → Jump.fbx, fall → Falling.fbx,
+land → Landing.fbx, crawl → Crawling.fbx, cover →
+Taking_Cover_Idle.fbx, punch → Punching.fbx, kick → Side_Kick.fbx,
+hitReaction → Hit_Reaction.fbx, death → Death.fbx,
+deathRifle → Rifle_Death.fbx, deathFallBack →
+Falling_Back_Death.fbx, knockedOut → Knocked_Out.fbx,
+climb → Climbing_Ladder.fbx, vault → Vault_Over_Box.fbx,
+turn → Turning.fbx, toRun → Idle_To_Running.fbx,
+wave → Waving.fbx, talk → Talking.fbx,
+talkPhone → Talking_On_A_Cell_Phone.fbx,
+plus weapon-specific loops (pistolWalk → Pistol_Walk.fbx,
+pistolRun → Pistol_Run.fbx, pistolWalkArc → Pistol_Walk_Arc.fbx,
+rifleWalk → Rifle_Walk.fbx, rifleRun → Rifle_Run.fbx,
+rifleSprint → Sprint_Forward.fbx, rifleCrouchWalk →
+Rifle_Crouch_Walk.fbx, idleCrouchingRifle → Idle_Crouching.fbx)
+and the remaining on-disk clips (headNodYes, honkingHorn,
+lookingAround, openingDoor, pointingForward, shakingHeadNo,
+shrugging, sittingIdle, standingUp, typing, pickingUp,
+grabPistol) bound in `ANIM_MAP` for API / future triggers.
+
+**Loops vs one-shots vs held poses:**
+- *Loops* (crossfaded, ~0.18 s): idle, walk, run, sprint,
+  crouchIdle, crouchWalk/sneak, crawl, cover, aimIdle, aimWalk,
+  aimPistol, fall, drive, sittingIdle, typing, and the
+  weapon-specific walk/run variants. The loop is chosen every
+  frame from game state (movement, weapon, aiming, crouching):
+  e.g. aimIdle is Rifle_Aiming_Idle for the rifle and Pistol_Aim
+  for the pistol; crouchWalk is Rifle_Crouch_Walk for the rifle
+  and Sneaking_Forward otherwise.
+- *One-shots* (play once, then return to the current loop):
+  fire, reload, jump, land (on touchdown), punch, kick,
+  hitReaction (when a guard shot lands), climb, vault, enter/exit
+  car, wave, talk, talkPhone, pickingUp (on intel pickup),
+  grabPistol, and the other gesture clips above. Death is a
+  one-shot that *holds* at its last frame (clamp, no return to
+  loop). Fire/reload/hit are retriggerable — a new shot restarts
+  the fire clip.
+- *Held poses* (play once, clamp at the last frame, stay until
+  toggled off): maleCrouchPose → Male_Crouch_Pose.fbx (key V),
+  femaleCrouchPose → Female_Crouch_Pose.fbx (key B). Pressing
+  the same key again releases the hold and resumes the loop.
+  Poses are never looped as walk cycles.
+
+**Root motion:** game code moves the player, so every clip has
+its root-bone (Hips) XZ translation stripped to its first frame
+(Y bob kept). Vault/climb therefore play in place rather than
+carrying the player — that is intentional in this courtyard,
+which has no ladder/vault object yet.
+
+**Guards (experimental, secondary):** guards try the same
+idle/walk clips only if their bone names match the clip tracks;
+terror models are not guaranteed to share the Mixamo rig, so a
+mismatched guard simply stays static. Guard mixers never affect
+AI, patrols, vision cones, or hit detection (hit detection walks
+the parent chain, as before), and a guard's mixer is stopped on
+death. Player animation is the priority; guard playback is a
+bonus and may legitimately be absent in-game.
+
+**Fallbacks, in order:** Agent_Kyle.fbx present + clips match →
+FBX playback. Agent_Kyle.fbx missing → try legacy Agent.fbx, then
+capsule. Any core clip fails the bone-name check (<50% of its
+tracks match the model) → that clip is rejected; if idle fails,
+the capsule is restored entirely. A single lazy clip failing
+never stops the game — the previous loop keeps playing.
 
 ## Asset map — which real models are wired in
 
@@ -151,10 +244,13 @@ rotation for weapons).
 
 ## Known gaps / simplifications
 
-- `Agent_Kyle.fbx` is now in the repo, so the player loader uses it;
-  `assets/` the player is still a procedural capsule (guards and
-  weapons above are real models, with capsule / box-gun fallbacks).
-  No model file was invented to fill that gap.
+- Player FBX playback is now wired (see Poses & animations above),
+  but it has NOT been live-playtested: rig match, root-motion
+  stripping, weapon hand placement (weapons are group-attached, not
+  hand-bone attached), model facing, and guard bone compatibility
+  all need an in-game check. If a clip looks wrong, the bone-name
+  check / rig mismatch is the first thing to investigate, and the
+  capsule fallback is still intact.
 - No vehicle is drivable yet: the courtyard has a parked car prop,
   and the drive / enter / exit FBX clips are mapped for a future
   vehicle system, not wired to driving gameplay.

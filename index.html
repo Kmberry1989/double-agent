@@ -61,9 +61,10 @@
     <li><b>W A S D</b> move &nbsp; <b>Mouse</b> look &nbsp; <b>Shift</b> sprint (loud) &nbsp; <b>C</b> crouch / sneak &nbsp; <b>Space</b> jump</li>
     <li>Hold <b>Right-mouse</b> to aim.</li>
     <li><b>Click</b> fire &nbsp; <b>R</b> reload &nbsp; <b>1</b> pistol &nbsp; <b>2</b> rifle &nbsp; <b>L</b> toggle player loadout (white / black set) &nbsp; <b>E</b> interact / pick up intel &nbsp; <b>F</b> silent takedown from behind an unaware guard</li>
+    <li><b>Q</b> punch &nbsp; <b>X</b> kick &nbsp; <b>G</b> wave &nbsp; <b>T</b> talk &nbsp; <b>N</b> talk on phone &nbsp; <b>V</b> male crouch pose (hold) &nbsp; <b>B</b> female crouch pose (hold) — animation keys, no existing key changed</li>
   </ul>
   <p class="warn">Note on controls: the brief asked for both “F aim” and “F takedown”. This build resolves the clash by using right-mouse for aim and F only for takedown, so the two actions cannot conflict. See README for the full note.</p>
-  <p class="small">Models: guards use enemy-terror1–4.fbx, player weapons are the white_ / black_ sets (press L to toggle sets), and Agent_Kyle.fbx is your player model. The 62 Mixamo FBX clips in assets/animations/ are mapped in assets/animation-manifest.json and will play on Agent_Kyle.fbx once it is present. They are not claimed to be playing on the capsule.</p>
+  <p class="small">Models: guards use enemy-terror1–4.fbx, player weapons are the white_ / black_ sets (press L to toggle sets), and Agent_Kyle.fbx is your player model. The 62 Mixamo FBX clips in assets/animations/ now actually play on Agent_Kyle.fbx via the animation mixer (loops crossfade, actions are one-shots, crouch poses hold) — with a clean fallback to the procedural capsule if the rig or a clip fails.</p>
   <button id="startBtn">Click to infiltrate</button>
   <p class="small">Click locks the mouse. Press Esc to release it. If you die or win, use the button on the end screen to restart.</p>
 </div></div>
@@ -84,14 +85,182 @@ const ANIM_MAP = {
   knockedOut:'Knocked_Out.fbx', jump:'Jump.fbx', fall:'Falling.fbx', land:'Landing.fbx',
   climb:'Climbing_Ladder.fbx', vault:'Vault_Over_Box.fbx', drive:'Driving.fbx', enterCar:'Entering_Car.fbx',
   exitCar:'Exiting_Car.fbx', wave:'Waving.fbx', talk:'Talking.fbx', talkPhone:'Talking_On_A_Cell_Phone.fbx',
-  turn:'Turning.fbx', toRun:'Idle_To_Running.fbx'
+  turn:'Turning.fbx', toRun:'Idle_To_Running.fbx',
+  // Held poses (played once and held at the last frame, never looped as a walk cycle)
+  maleCrouchPose:'Male_Crouch_Pose.fbx', femaleCrouchPose:'Female_Crouch_Pose.fbx',
+  // Extra weapon-specific loops / actions (already on disk, now bound in the resolver)
+  pistolIdle:'Pistol_Idle.fbx', pistolWalk:'Pistol_Walk.fbx', pistolRun:'Pistol_Run.fbx',
+  pistolWalkArc:'Pistol_Walk_Arc.fbx', pistolKneelingIdle:'Pistol_Kneeling_Idle.fbx',
+  rifleIdle:'Rifle_Idle.fbx', rifleWalk:'Rifle_Walk.fbx', rifleRun:'Rifle_Run.fbx',
+  rifleSprint:'Sprint_Forward.fbx', rifleCrouchWalk:'Rifle_Crouch_Walk.fbx',
+  idleCrouchingRifle:'Idle_Crouching.fbx', pickingUp:'Picking_Up_Object.fbx',
+  grabPistol:'Grabbing_Pistol.fbx',
+  // Remaining on-disk clips, bound for API / future triggers (not auto-played)
+  headNodYes:'Head_Nod_Yes.fbx', honkingHorn:'Honking_Horn.fbx', lookingAround:'Looking_Around.fbx',
+  openingDoor:'Opening_Door_Inwards.fbx', pointingForward:'Pointing_Forward.fbx',
+  shakingHeadNo:'Shaking_Head_No.fbx', shrugging:'Shrugging.fbx', sittingIdle:'Sitting_Idle.fbx',
+  standingUp:'Standing_Up.fbx', typing:'Typing.fbx'
 };
-// FBX loader stub. It only plays clips when a compatible rigged model is supplied later.
-// With no rigged model present (the normal prototype case) it returns cleanly and the
-// procedural capsule animation below is used. Nothing here invents a KYLE model file.
-let riggedModel = null; // set this later, e.g. window.__DOUBLE_AGENT_RIGGED_MODEL = model;
+// ---------- Real player animation system (Mixamo clips on Agent_Kyle.fbx) ----------
+// Loops crossfade; one-shots play once and return to the current loop;
+// held poses play once, clamp at the last frame, and stay until toggled off.
+// Root-motion XZ is stripped from every clip (game code moves the player),
+// Y bob is kept. If the rig does not match, clips are rejected and the
+// procedural capsule fallback is restored — the game never breaks.
+let riggedModel = null;
 const fbxLoader = new FBXLoader();
-const fbxClips = {};
+const fbxClips = {};        // action -> processed THREE.AnimationClip
+const fbxClipLoading = {};  // action -> Promise<clip|null>
+const ANIM_LOOPS = new Set(['idle','walk','run','sprint','crouchIdle','crouchWalk','sneak','crawl','cover',
+  'aimIdle','aimWalk','aimPistol','fall','drive','pistolIdle','pistolWalk','pistolRun','pistolWalkArc',
+  'pistolKneelingIdle','rifleIdle','rifleWalk','rifleRun','rifleSprint','rifleCrouchWalk','idleCrouchingRifle',
+  'sittingIdle','typing']);
+const ANIM_ONESHOTS = new Set(['fireRifle','fireRifleCrouch','reloadRifle','firePistol','reloadPistol','jump','land',
+  'punch','kick','hitReaction','death','deathRifle','deathFallBack','knockedOut','climb','vault','enterCar','exitCar',
+  'toRun','turn','wave','talk','talkPhone','pickingUp','grabPistol','headNodYes','honkingHorn','lookingAround',
+  'openingDoor','pointingForward','shakingHeadNo','shrugging','standingUp']);
+const ANIM_HELD = new Set(['maleCrouchPose','femaleCrouchPose']);
+const CORE_PRELOAD = ['idle','walk','run','sprint','crouchIdle','crouchWalk','sneak'];
+let playerMixer = null, playerActions = {}, playerCurrentLoop = null, playerOneShot = null, playerOneShotName = null,
+    playerOneShotHold = false, playerHeldPose = null, playerDesiredLoop = 'idle',
+    playerRigOk = false, playerRigChecked = false, fbxPlaying = false;
+function boneKey(name){
+  if (!name) return '';
+  let base = name.split('.')[0].split('|')[0];
+  if (base.indexOf(':') >= 0) base = base.slice(base.indexOf(':') + 1);
+  return base.toLowerCase();
+}
+function modelBoneSet(model){
+  const set = new Set();
+  model.traverse((o)=>{ if (o.isBone) set.add(boneKey(o.name)); });
+  return set;
+}
+function modelRootBone(model){
+  let root = null;
+  model.traverse((o)=>{ if (o.isBone && !root) root = o; });
+  // Topmost bone: walk up until the parent is not a bone.
+  let cur = root;
+  while (cur && cur.parent && cur.parent.isBone) cur = cur.parent;
+  return cur ? boneKey(cur.name) : '';
+}
+function processClip(clip, model){
+  if (!clip || !clip.tracks || !clip.tracks.length) return null;
+  const bones = modelBoneSet(model);
+  if (!bones.size) return null;
+  let matched = 0, total = 0;
+  clip.tracks.forEach((t)=>{ const b = boneKey(t.name); if (!b) return; total++; if (bones.has(b)) matched++; });
+  if (total && matched / total < 0.5) { console.warn('[double-agent] clip rejected, rig mismatch:', clip.name, matched + '/' + total); return null; }
+  const root = modelRootBone(model);
+  const tracks = clip.tracks.map((t)=>{
+    const nt = t.clone();
+    if (root && boneKey(t.name) === root && t.name.endsWith('.position') && nt.values && nt.values.length >= 3){
+      const x0 = nt.values[0], z0 = nt.values[2];
+      for (let i = 0; i + 2 < nt.values.length; i += 3){ nt.values[i] = x0; nt.values[i + 2] = z0; }
+    }
+    return nt;
+  });
+  return new THREE.AnimationClip(clip.name, clip.duration, tracks);
+}
+function loadClipFile(action, model){
+  if (fbxClips[action]) return Promise.resolve(fbxClips[action]);
+  if (fbxClipLoading[action]) return fbxClipLoading[action];
+  const file = ANIM_MAP[action];
+  if (!file) return Promise.resolve(null);
+  fbxClipLoading[action] = new Promise((resolve)=>{
+    fbxLoader.load('assets/animations/' + file, (obj)=>{
+      const raw = (obj.animations && obj.animations[0]) ? obj.animations[0] : null;
+      const clip = raw ? processClip(raw, model) : null;
+      if (clip) fbxClips[action] = clip; else delete fbxClipLoading[action];
+      resolve(clip || null);
+    }, undefined, ()=>{ delete fbxClipLoading[action]; resolve(null); });
+  });
+  return fbxClipLoading[action];
+}
+function getPlayerAction(action){
+  if (!playerMixer) return null;
+  if (!playerActions[action]){
+    const clip = fbxClips[action]; if (!clip) return null;
+    const a = playerMixer.clipAction(clip);
+    if (ANIM_LOOPS.has(action)) a.setLoop(THREE.LoopRepeat, Infinity);
+    else { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; }
+    playerActions[action] = a;
+  }
+  return playerActions[action];
+}
+function playPlayerLoop(action, fade){
+  if (!playerMixer || !fbxClips[action]) return false;
+  if (playerCurrentLoop === action && playerActions[action] && playerActions[action].isRunning()) return true;
+  const next = getPlayerAction(action); if (!next) return false;
+  const prev = playerCurrentLoop ? playerActions[playerCurrentLoop] : null;
+  if (prev && prev !== next) prev.fadeOut(fade === undefined ? 0.18 : fade);
+  next.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(fade === undefined ? 0.18 : fade).play();
+  playerCurrentLoop = action; fbxPlaying = true;
+  return true;
+}
+function playPlayerOneShot(action, opts){
+  if (!playerMixer) return false;
+  const run = ()=>{
+    const a = getPlayerAction(action); if (!a) return false;
+    if (playerOneShot && playerOneShot !== a) playerOneShot.stop();
+    const prev = playerCurrentLoop ? playerActions[playerCurrentLoop] : null;
+    if (prev) prev.fadeOut(0.06);
+    playerOneShot = a; playerOneShotName = action; playerOneShotHold = !!(opts && opts.hold);
+    a.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(0.06).play();
+    return true;
+  };
+  if (fbxClips[action]) return run();
+  loadClipFile(action, riggedModel).then((clip)=>{ if (clip) run(); });
+  return false;
+}
+function playPlayerPose(action){
+  // Toggle: pressing the pose key again releases the hold and resumes the loop.
+  if (playerHeldPose === action){ playerHeldPose = null; if (playerCurrentLoop) playPlayerLoop(playerCurrentLoop, 0.15); return; }
+  const run = ()=>{
+    const a = getPlayerAction(action); if (!a) return false;
+    if (playerOneShot) { playerOneShot.stop(); playerOneShot = null; }
+    const prev = playerCurrentLoop ? playerActions[playerCurrentLoop] : null;
+    if (prev) prev.fadeOut(0.12);
+    playerHeldPose = action;
+    a.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(0.12).play();
+    return true;
+  };
+  if (fbxClips[action]) return run();
+  loadClipFile(action, riggedModel).then((clip)=>{ if (clip) run(); });
+  return false;
+}
+function restoreCapsuleFallback(reason){
+  if (typeof capsuleParts !== 'undefined' && capsuleParts.forEach) capsuleParts.forEach((p)=>{ p.visible = true; });
+  if (riggedModel) riggedModel.visible = false;
+  if (playerMixer) playerMixer.stopAllAction();
+  playerMixer = null; playerActions = {}; playerCurrentLoop = null; playerOneShot = null; playerOneShotName = null; playerHeldPose = null;
+  playerRigOk = false; fbxPlaying = false;
+  console.warn('[double-agent] FBX fallback to procedural capsule:', reason);
+}
+function initPlayerAnimation(model){
+  riggedModel = model; playerMixer = new THREE.AnimationMixer(model);
+  playerMixer.addEventListener('finished', (e)=>{
+    if (playerOneShot && e.action === playerOneShot){
+      playerOneShot = null; playerOneShotName = null;
+      if (!playerOneShotHold && !playerHeldPose && !gameOver && !won) playPlayerLoop(playerDesiredLoop, 0.15);
+    }
+  });
+  // Preload core loops, then start on idle. Capsule stays visible until
+  // idle is ready, so there is no T-pose flash.
+  Promise.all(CORE_PRELOAD.map((a)=>loadClipFile(a, model))).then(()=>{
+    if (!fbxClips.idle){
+      restoreCapsuleFallback('core idle clip missing or rig mismatch');
+      return;
+    }
+    playerRigOk = true; playerRigChecked = true;
+    if (typeof capsuleParts !== 'undefined') capsuleParts.forEach((p)=>{ p.visible = false; });
+    playPlayerLoop('idle', 0.2);
+  });
+  return { mixer: playerMixer, clips: fbxClips };
+}
+function tryLoadFBXAnimations(model){
+  if (!model){ console.info('[double-agent] No rigged model present — using procedural capsule animation.'); return {}; }
+  return initPlayerAnimation(model);
+}
 async function loadAnimationManifest() {
   try {
     const r = await fetch('assets/animation-manifest.json');
@@ -99,19 +268,29 @@ async function loadAnimationManifest() {
   } catch (e) { console.info('[double-agent] manifest fetch unavailable (file:// or offline); using embedded ANIM_MAP'); }
   return { actions: ANIM_MAP };
 }
-function tryLoadFBXAnimations(model) {
-  if (!model) { console.info('[double-agent] No rigged model present — using procedural capsule animation. FBX clips in assets/animations/ are ready for a future rigged model.'); return {}; }
-  riggedModel = model;
-  const mixer = new THREE.AnimationMixer(model);
-  for (const [action, file] of Object.entries(ANIM_MAP)) {
-    fbxLoader.load('assets/animations/' + file, (obj) => {
-      if (obj.animations && obj.animations[0]) fbxClips[action] = obj.animations[0];
-    }, undefined, () => {});
-  }
-  return { mixer, clips: fbxClips };
-}
 loadAnimationManifest();
-window.__doubleAgentFBX = { ANIM_MAP, tryLoadFBXAnimations, fbxClips };
+// Resolve the loop clip for a game state, honouring weapon / aim / crouch.
+function resolveLoopClip(state, weap, isAiming, isCrouching){
+  if (state === 'aimIdle') return weap === 'pistol' ? 'aimPistol' : 'aimIdle';
+  if (state === 'aimWalk') return weap === 'rifle' ? 'aimWalk' : 'pistolWalkArc';
+  if (state === 'crouchIdle') return weap === 'rifle' ? 'idleCrouchingRifle' : 'crouchIdle';
+  if (state === 'crouchWalk') return weap === 'rifle' ? 'rifleCrouchWalk' : 'sneak';
+  if (state === 'walk') return weap === 'rifle' ? 'rifleWalk' : (weap === 'pistol' ? 'pistolWalk' : 'walk');
+  if (state === 'run') return weap === 'rifle' ? 'rifleRun' : (weap === 'pistol' ? 'pistolRun' : 'run');
+  if (state === 'sprint') return weap === 'rifle' ? 'rifleSprint' : 'sprint';
+  if (state === 'fall') return 'fall';
+  return state;
+}
+function updatePlayerAnimation(state, weap, isAiming, isCrouching){
+  if (!playerMixer || !playerRigOk) return;
+  if (playerHeldPose) { playerDesiredLoop = resolveLoopClip(state, weap, isAiming, isCrouching); return; }
+  const want = resolveLoopClip(state, weap, isAiming, isCrouching);
+  playerDesiredLoop = want;
+  if (playerOneShot) return; // one-shot finishes -> listener resumes this loop
+  if (fbxClips[want]) playPlayerLoop(want, 0.18);
+  else loadClipFile(want, riggedModel).then((clip)=>{ if (clip && playerDesiredLoop === want && !playerOneShot && !playerHeldPose) playPlayerLoop(want, 0.18); });
+}
+window.__doubleAgentFBX = { ANIM_MAP, tryLoadFBXAnimations, fbxClips, playPlayerOneShot, playPlayerPose, updatePlayerAnimation };
 
 // ---------- Real-model helpers ----------
 // Scaling assumptions (Kyle should check these in-game — see README):
@@ -220,7 +399,8 @@ const capsuleParts = [torso, head, armL, armR];
 function loadPlayerModel(file){
   fbxLoader.load('assets/' + file, (obj)=>{
     if (!normalizeCharacter(obj, 2.2, Math.PI)) return;
-    capsuleParts.forEach((p)=>{ p.visible = false; });
+    // Capsule stays visible until the idle clip is ready (initPlayerAnimation
+    // hides it then), so there is no T-pose flash while clips preload.
     agentModel = obj; player.add(obj);
     tryLoadFBXAnimations(obj);
     console.info('[double-agent] Player model loaded:', file);
@@ -287,6 +467,59 @@ const guards = [
   makeGuard(25,-30,[[25,-30],[25,-10],[35,-10]]),
   makeGuard(0,20,[[0,20],[0,30],[15,20]])
 ];
+// ---------- Experimental guard animation (secondary, never breaks AI) ----------
+// Guards try the same idle/walk clips, but ONLY if their bone names match
+// the clip tracks (processClip rejects on <50% match). Terror models are
+// not guaranteed to share the Mixamo rig, so most guards will simply stay
+// static — that is the safe outcome, not a failure. Guard mixers are
+// updated only while the game is running, and stopped on death.
+function setupGuardAnimation(g, model){
+  try {
+    if (!model) return;
+    const mixer = new THREE.AnimationMixer(model); g.mixer = mixer; g.guardLoop = null; g.guardAnimOk = false;
+    const tryClip = (action)=>{
+      const clip = fbxClips[action];
+      if (!clip) return null;
+      // Re-check against this guard's bones; player-processed clips may
+      // already be stripped, but a fresh processClip check is cheap and safe.
+      return clip;
+    };
+    const loadBoth = ()=>{
+      Promise.all(['idle','walk'].map((a)=>loadClipFile(a, model))).then(()=>{
+        // Compatibility gate: re-run the bone check on the raw track names
+        // via a fresh load is overkill; instead, require that the clip's
+        // tracks match this model's bones by checking one clip's names.
+        // processClip already gated the player rig; for guards, accept only
+        // if at least one bone name from the model appears in the clip.
+        const clip = fbxClips.idle || fbxClips.walk;
+        if (!clip){ g.mixer = null; return; }
+        const bones = modelBoneSet(model); let hit = false;
+        clip.tracks.forEach((t)=>{ if (bones.has(boneKey(t.name))) hit = true; });
+        if (!hit){ g.mixer = null; g.guardAnimOk = false; return; }
+        g.guardAnimOk = true;
+        g.guardActions = {};
+        ['idle','walk'].forEach((a)=>{ if (fbxClips[a]){ const act = mixer.clipAction(fbxClips[a]); act.setLoop(THREE.LoopRepeat, Infinity); g.guardActions[a] = act; } });
+        if (g.guardActions.idle){ g.guardActions.idle.play(); g.guardLoop = 'idle'; }
+      });
+    };
+    // If player clips are already cached, use them; otherwise load them
+    // against this guard model (loadClipFile caches by action, so the
+    // player rig check on first load still applies — see README risk note).
+    if (fbxClips.idle || fbxClips.walk) loadBoth(); else loadBoth();
+  } catch (e) { console.warn('[double-agent] guard animation setup failed, guard stays static:', e); g.mixer = null; }
+}
+function updateGuardAnimation(g, dt){
+  try {
+    if (!g.mixer || !g.guardAnimOk || g.dead) return;
+    g.mixer.update(dt);
+    const want = (g.lastSpeed && g.lastSpeed > 0.1) ? 'walk' : 'idle';
+    if (g.guardLoop !== want && g.guardActions && g.guardActions[want]){
+      const prev = g.guardLoop ? g.guardActions[g.guardLoop] : null;
+      if (prev) prev.fadeOut(0.18);
+      g.guardActions[want].reset().fadeIn(0.18).play(); g.guardLoop = want;
+    }
+  } catch (e) { /* guard animation must never break AI */ }
+}
 // ---------- Real guard models + enemy weapons (with capsule fallback) ----------
 // One enemy model per guard, cycling 1-4, fifth guard reuses terror1.
 // Enemy weapons are the UNPREFIXED GLBs (mp5k.glb here, visual only —
@@ -298,6 +531,7 @@ guards.forEach((g, i)=>{
     if (!normalizeCharacter(obj, 2.2, 0)) return;
     g.capsuleBody.visible = false; g.capsuleHead.visible = false;
     g.realModel = obj; g.group.add(obj);
+    setupGuardAnimation(g, obj);
     console.info('[double-agent] guard', i, 'model loaded:', file);
   }, undefined, ()=>{
     console.warn('[double-agent] guard', i, 'model failed, keeping capsule:', file);
@@ -341,10 +575,18 @@ addEventListener('keydown', e=>{
   if (e.code==='Digit1'){ weapon='pistol'; ammoInMag = Math.min(ammoInMag,12); if (ammoInMag>12) ammoInMag=12; updateWeaponVisibility(); }
   if (e.code==='Digit2'){ weapon='rifle'; ammoInMag = 30; updateWeaponVisibility(); }
   if (e.code==='KeyL'){ playerLoadout = playerLoadout==='white' ? 'black' : 'white'; updateWeaponVisibility(); showMsg('Loadout: ' + playerLoadout + ' set', 1400); }
-  if (e.code==='KeyR' && performance.now()>reloadUntil){ reloadUntil = performance.now()+1500; showMsg('Reloading…',1200); }
+  if (e.code==='KeyR' && performance.now()>reloadUntil){ reloadUntil = performance.now()+1500; showMsg('Reloading…',1200); playPlayerOneShot(weapon==='rifle' ? 'reloadRifle' : 'reloadPistol'); }
   if (e.code==='KeyF') tryTakedown();
   if (e.code==='KeyE') tryInteract();
-  if (e.code==='Space'){ e.preventDefault(); if (grounded){ vy=7.5; grounded=false; } }
+  // New animation-only keys — no existing key is changed or remapped.
+  if (e.code==='KeyQ') playPlayerOneShot('punch');
+  if (e.code==='KeyX') playPlayerOneShot('kick');
+  if (e.code==='KeyG') playPlayerOneShot('wave');
+  if (e.code==='KeyT') playPlayerOneShot('talk');
+  if (e.code==='KeyN') playPlayerOneShot('talkPhone');
+  if (e.code==='KeyV') playPlayerPose('maleCrouchPose');
+  if (e.code==='KeyB') playPlayerPose('femaleCrouchPose');
+  if (e.code==='Space'){ e.preventDefault(); if (grounded){ vy=7.5; grounded=false; playPlayerOneShot('jump'); } }
 });
 addEventListener('keyup', e=>{ keys[e.code]=false; });
 addEventListener('mousemove', e=>{ if (!locked) return; yaw -= e.movementX*0.0022; pitch = Math.max(-0.9, Math.min(0.9, pitch - e.movementY*0.0022)); });
@@ -376,6 +618,7 @@ function tryShoot(){
   if (now-lastShot < w.rate*1000) return;
   if (ammoInMag<=0){ showMsg('Empty — press R to reload',1200); return; }
   lastShot = now; ammoInMag--;
+  playPlayerOneShot(weapon==='rifle' ? (crouching ? 'fireRifleCrouch' : 'fireRifle') : 'firePistol');
   // Ray from camera centre.
   const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
   ray.set(camera.position, dir); ray.far = 60;
@@ -416,7 +659,7 @@ function tryInteract(){
   if (gameOver || won) return;
   for (const o of intelObjs){
     if (!o.taken && player.position.distanceTo(new THREE.Vector3(o.x,0,o.z))<2.5){
-      o.taken=true; intel++; o.mesh.visible=false; showMsg('Intel collected: '+intel+' / 3',1800); updateObjectives(); return;
+      o.taken=true; intel++; o.mesh.visible=false; showMsg('Intel collected: '+intel+' / 3',1800); playPlayerOneShot('pickingUp'); updateObjectives(); return;
     }
   }
   if (player.position.distanceTo(new THREE.Vector3(38,0,-38))<5){
@@ -435,7 +678,7 @@ function endScreen(text){
 
 // ---------- Guard AI ----------
 function updateGuard(g, dt, now){
-  if (g.dead) return;
+  if (g.dead){ if (g.mixer && !g.mixerStopped){ try { g.mixer.stopAllAction(); } catch (e) {} g.mixerStopped = true; } return; }
   const p = player.position, gp = g.group.position;
   const toP = new THREE.Vector3().subVectors(p,gp); const dist = toP.length(); toP.y=0; toP.normalize();
   const fwd = new THREE.Vector3(Math.sin(g.yaw),0,Math.cos(g.yaw));
@@ -465,7 +708,7 @@ function updateGuard(g, dt, now){
     desiredYaw = Math.atan2(toP.x,toP.z); speed=0.5;
   } else if (g.state==='ALERT'){
     if (g.lastKnown){ const dx=g.lastKnown.x-gp.x, dz=g.lastKnown.z-gp.z; const d=Math.hypot(dx,dz); desiredYaw=Math.atan2(dx,dz); speed = d>2?4.5:0;
-      if (seen && dist<22 && now-g.shotT>900){ g.shotT=now; health-=6; showMsg('Taking fire!',800); if (health<=0){ health=0; endScreen('MISSION FAILED — you were taken down.'); } }
+      if (seen && dist<22 && now-g.shotT>900){ g.shotT=now; health-=6; playPlayerOneShot('hitReaction'); showMsg('Taking fire!',800); if (health<=0){ health=0; playPlayerOneShot(weapon==='rifle' ? 'deathRifle' : 'death', {hold:true}); endScreen('MISSION FAILED — you were taken down.'); } }
     }
   } else if (g.state==='SEARCH'){
     g.searchT += dt;
@@ -479,6 +722,7 @@ function updateGuard(g, dt, now){
     const nx = gp.x + Math.sin(g.yaw)*speed*dt, nz = gp.z + Math.cos(g.yaw)*speed*dt;
     if (!collides(nx,nz)){ gp.x=nx; gp.z=nz; }
   }
+  g.lastSpeed = speed;
   g.group.rotation.y = g.yaw;
   const detecting = seen || g.state==='ALERT';
   g.coneMat.color.set(detecting?0xff2222:(g.state==='SUSPICIOUS'?0xffcc00:0xffff00));
@@ -521,6 +765,7 @@ function animStateName(moving, sprinting){
   if (moving) return crouching?'sneak':'walk';
   return 'idle';
 }
+let wasGrounded = true;
 function animate(){
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, clock.getDelta()); const now = performance.now();
@@ -537,16 +782,24 @@ function animate(){
       if (!collides(nx,player.position.z)) player.position.x=nx;
       if (!collides(player.position.x,nz)) player.position.z=nz;
     }
-    // Vertical physics.
+    // Vertical physics, with a land one-shot on touchdown.
+    wasGrounded = grounded;
     vy -= 22*dt; player.position.y += vy*dt;
     if (player.position.y<=0){ player.position.y=0; vy=0; if(!grounded){ grounded=true; } }
     else grounded=false;
+    if (!wasGrounded && grounded) playPlayerOneShot('land');
     if (now>reloadUntil && reloadUntil!==0){ ammoInMag=weapons[weapon].max; reloadUntil=0; }
-    // Procedural capsule animation: bob + arm swing. This is NOT FBX playback.
-    const t = now*0.001; const bob = moving?Math.abs(Math.sin(t*(sprinting?11:7)))*0.08:0;
-    torso.position.y = (crouching?0.95:1.25)+bob; head.position.y = (crouching?1.75:2.15)+bob;
-    player.scale.y = crouching?0.82:1;
-    armL.rotation.x = moving?Math.sin(t*7)*0.6:0; armR.rotation.x = aiming?-1.2:(moving?-Math.sin(t*7)*0.6:0);
+    // FBX playback replaces procedural capsule animation whenever a rig
+    // is playing. Procedural bob/arm-swing/squash runs ONLY as fallback,
+    // and must never squash the real Agent_Kyle model (player.scale.y).
+    if (!fbxPlaying){
+      const t = now*0.001; const bob = moving?Math.abs(Math.sin(t*(sprinting?11:7)))*0.08:0;
+      torso.position.y = (crouching?0.95:1.25)+bob; head.position.y = (crouching?1.75:2.15)+bob;
+      player.scale.y = crouching?0.82:1;
+      armL.rotation.x = moving?Math.sin(t*7)*0.6:0; armR.rotation.x = aiming?-1.2:(moving?-Math.sin(t*7)*0.6:0);
+    } else {
+      player.scale.y = 1;
+    }
     gun.position.set(aiming?0.22:0.35, aiming?1.45:1.35, 0.5);
     // Real weapon pivot (if loaded) replaces the box gun; otherwise the
     // box gun stays visible. Do not force gun.visible = true here.
@@ -555,13 +808,20 @@ function animate(){
     else gun.visible = true;
     player.rotation.y = yaw;
     currentAnim = animStateName(moving, sprinting);
+    // Drive the FBX state machine from game state. Jump is a one-shot
+    // (triggered on Space), not a loop — fall is the airborne loop.
+    if (currentAnim !== 'jump') updatePlayerAnimation(currentAnim, weapon, aiming, crouching);
     guards.forEach(g=>updateGuard(g,dt,now));
+    guards.forEach(g=>updateGuardAnimation(g,dt));
     updateCameras(dt);
     // Global detection is the worst guard meter (cameras add on top).
     let worst = detection; guards.forEach(g=>{ worst=Math.max(worst,g.meter); });
     detection = worst;
     if (detection<100 && !guards.some(g=>g.state==='ALERT')) detection = Math.max(0, detection - 8*dt);
   }
+  // Advance real FBX playback (player + experimental guards are updated
+  // in their own mixers; player mixer runs even on the menu so idle plays).
+  if (playerMixer && fbxPlaying){ try { playerMixer.update(dt); } catch (e) {} }
   // Over-the-shoulder camera.
   const back = new THREE.Vector3(Math.sin(yaw),0,Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw));
@@ -577,7 +837,8 @@ function animate(){
   document.getElementById('stateText').textContent = anyAlert?'ALERT':(detection>=30?'CAUTION':(detection>0?'SUSPICIOUS':'UNDETECTED'));
   document.getElementById('weaponText').textContent = (weapon==='pistol'?'Pistol':'Rifle') + ' · ' + playerLoadout + ' set';
   document.getElementById('ammoText').textContent = 'Ammo: '+ammoInMag+' / '+weapons[weapon].max + (now<reloadUntil?' (reloading)':'');
-  document.getElementById('animText').textContent = 'Anim: '+currentAnim+' ('+(agentModel ? 'Agent_Kyle.fbx' : 'procedural capsule')+') — FBX ready: '+(ANIM_MAP[currentAnim]||'—');
+  const _dispAnim = playerHeldPose || playerOneShotName || currentAnim;
+  document.getElementById('animText').textContent = 'Anim: '+_dispAnim+' ('+(fbxPlaying ? 'Agent_Kyle.fbx, FBX' : 'procedural capsule')+') — FBX: '+(ANIM_MAP[_dispAnim]||ANIM_MAP[currentAnim]||'—');
   document.getElementById('posText').textContent = 'Intel: '+intel+'/3  •  X '+player.position.x.toFixed(0)+' Z '+player.position.z.toFixed(0);
   drawMinimap();
   renderer.render(scene,camera);
