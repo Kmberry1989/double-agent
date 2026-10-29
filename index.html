@@ -40,7 +40,7 @@
   <p id="obj2">○ Collect intel 2 / 3</p>
   <p id="obj3">○ Collect intel 3 / 3</p>
   <p id="objExfil">○ Reach the green EXFIL gate with all 3 intel</p>
-  <p class="small">Stay out of cones. Crouch to be quieter. F behind an unaware guard = silent takedown.</p>
+  <p class="small">Silent start: you begin alone in the southwest corner — no patrols or cameras nearby. Stay out of cones. Crouch to be quieter. F behind an unaware guard = silent takedown.</p>
 </div>
 <canvas id="minimap" width="190" height="190"></canvas>
 <div id="cross">+</div>
@@ -55,6 +55,7 @@
 <div id="overlay"><div class="box">
   <h1>DOUBLE AGENT</h1>
   <p><b>Original stealth prototype.</b> No characters, story, music or assets from any existing game are used here. You are an unnamed operative infiltrating a generic facility courtyard. Get the intel, avoid the patrols and cameras, get out.</p>
+  <p><b>Silent start:</b> you begin alone in a walled alcove in the southwest corner, facing northeast into the courtyard. No guard patrol and no security camera is within 30 m of the spawn, so nothing can see or hear you at the start.</p>
   <h2>Controls</h2>
   <ul>
     <li><b>W A S D</b> move &nbsp; <b>Mouse</b> look &nbsp; <b>Shift</b> sprint (loud) &nbsp; <b>C</b> crouch / sneak &nbsp; <b>Space</b> jump</li>
@@ -141,6 +142,10 @@ box(22,18,12,2,3,0x777777); box(-28,24,2,12,3,0x8a7a5a); box(8,-26,18,2,3,0x7777
 box(-14,0,3,3,1.2,0xa0824a); box(-10,2,3,3,1.2,0xa0824a); box(12,6,3,3,1.2,0xa0824a);
 box(30,-24,4,4,2,0x9a6a3a); box(-34,-28,4,4,2,0x9a6a3a); box(0,-34,10,6,5,0x5a6a7a);
 box(-32,8,8,8,6,0x5a6a7a); box(34,28,8,8,6,0x5a6a7a);
+// SILENT START: a walled alcove in the southwest corner. The player spawns here,
+// alone — no guard patrol waypoint and no security camera is within 30 m of it.
+// The only way out is east, around the end of the north wall, into the courtyard.
+box(-38,32,12,2,3,0x777777);
 // A parked car prop (visual only; drive clips are for a future vehicle system, not this courtyard)
 (function car(){
   const g = new THREE.Group(); g.position.set(-24,0,32); g.rotation.y = 0.6;
@@ -156,8 +161,8 @@ const head = new THREE.Mesh(new THREE.SphereGeometry(0.32,16,12), mat(0xd8b08a))
 const gun = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.12,0.9), mat(0x111111)); gun.position.set(0.35,1.35,0.5); player.add(gun);
 const armL = new THREE.Mesh(new THREE.BoxGeometry(0.16,0.7,0.16), mat(0x2a3a4a)); armL.position.set(-0.55,1.35,0); player.add(armL);
 const armR = new THREE.Mesh(new THREE.BoxGeometry(0.16,0.7,0.16), mat(0x2a3a4a)); armR.position.set(0.55,1.35,0.3); player.add(armR);
-player.position.set(0,0,38);
-let yaw = Math.PI, pitch = 0.12, vy = 0, grounded = true, crouching = false, aiming = false;
+player.position.set(-38,0,38);
+let yaw = -Math.PI/4, pitch = 0.12, vy = 0, grounded = true, crouching = false, aiming = false;
 let health = 100, detection = 0, intel = 0, gameOver = false, won = false;
 let weapon = 'pistol'; // pistol | rifle
 const weapons = { pistol:{mag:12, max:12, dmg:34, rate:0.28}, rifle:{mag:30, max:30, dmg:50, rate:0.11} };
@@ -188,7 +193,7 @@ const guards = [
   makeGuard(15,15,[[15,15],[28,15],[28,28],[15,28]]),
   makeGuard(-25,-25,[[-25,-25],[-25,-5],[-35,-5]]),
   makeGuard(25,-30,[[25,-30],[25,-10],[35,-10]]),
-  makeGuard(0,20,[[0,20],[-15,20],[0,30]])
+  makeGuard(0,20,[[0,20],[0,30],[15,20]])
 ];
 // ---------- Cameras ----------
 const cameras = [];
