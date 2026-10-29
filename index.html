@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Double Agent — Stealth Prototype</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f0d;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#e8ecea}
+  #game{position:fixed;inset:0;display:block}
+  #hud{position:fixed;left:16px;bottom:16px;z-index:5;pointer-events:none}
+  .bar{width:260px;height:14px;background:rgba(0,0,0,.55);border:1px solid #556; margin:4px 0}
+  .bar>i{display:block;height:100%;background:#57d977}
+  #detectBar>i{background:#57d977}
+  #hud p{margin:2px 0;font-size:14px;text-shadow:0 1px 2px #000}
+  #hud b{font-size:15px}
+  #objectives{position:fixed;left:16px;top:16px;z-index:5;background:rgba(0,0,0,.55);padding:10px 12px;border:1px solid #445;max-width:320px}
+  #objectives p{margin:4px 0;font-size:14px}
+  #objectives .done{color:#7dff9a;text-decoration:line-through}
+  #minimap{position:fixed;right:16px;top:16px;z-index:5;background:rgba(0,0,0,.6);border:1px solid #445}
+  #msg{position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:6;background:rgba(0,0,0,.7);padding:10px 16px;border:1px solid #667;font-size:17px;display:none}
+  #cross{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:4;font-size:22px;pointer-events:none;opacity:.85;text-shadow:0 0 4px #000}
+  #overlay{position:fixed;inset:0;z-index:10;background:rgba(5,10,8,.88);display:flex;align-items:center;justify-content:center;text-align:center}
+  #overlay .box{max-width:720px;padding:24px}
+  #overlay h1{margin:0 0 8px;font-size:38px;letter-spacing:1px}
+  #overlay h2{margin:18px 0 6px;font-size:18px}
+  #overlay p,#overlay li{font-size:15px;line-height:1.5;text-align:left}
+  #overlay button{font-size:19px;padding:12px 26px;cursor:pointer;margin-top:14px}
+  .warn{color:#ffd166}
+  .small{font-size:13px;color:#c8d2cc}
+</style>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="objectives">
+  <b>OBJECTIVES</b>
+  <p id="obj1">○ Collect intel 1 / 3</p>
+  <p id="obj2">○ Collect intel 2 / 3</p>
+  <p id="obj3">○ Collect intel 3 / 3</p>
+  <p id="objExfil">○ Reach the green EXFIL gate with all 3 intel</p>
+  <p class="small">Stay out of cones. Crouch to be quieter. F behind an unaware guard = silent takedown.</p>
+</div>
+<canvas id="minimap" width="190" height="190"></canvas>
+<div id="cross">+</div>
+<div id="msg"></div>
+<div id="hud">
+  <p><b id="stateText">UNDETECTED</b> &nbsp; <span id="weaponText">Pistol</span> &nbsp; <span id="animText">Anim: idle (procedural capsule)</span></p>
+  <p>Health</p><div class="bar"><i id="healthBar" style="width:100%"></i></div>
+  <p>Detection</p><div class="bar" id="detectBar"><i id="detectFill" style="width:0%"></i></div>
+  <p id="ammoText">Ammo: 12 / 12</p>
+  <p id="posText" class="small"></p>
+</div>
+<div id="overlay"><div class="box">
+  <h1>DOUBLE AGENT</h1>
+  <p><b>Original stealth prototype.</b> No characters, story, music or assets from any existing game are used here. You are an unnamed operative infiltrating a generic facility courtyard. Get the intel, avoid the patrols and cameras, get out.</p>
+  <h2>Controls</h2>
+  <ul>
+    <li><b>W A S D</b> move &nbsp; <b>Mouse</b> look &nbsp; <b>Shift</b> sprint (loud) &nbsp; <b>C</b> crouch / sneak &nbsp; <b>Space</b> jump</li>
+    <li>Hold <b>Right-mouse</b> to aim.</li>
+    <li><b>Click</b> fire &nbsp; <b>R</b> reload &nbsp; <b>1</b> pistol &nbsp; <b>2</b> rifle &nbsp; <b>E</b> interact / pick up intel &nbsp; <b>F</b> silent takedown from behind an unaware guard</li>
+  </ul>
+  <p class="warn">Note on controls: the brief asked for both “F aim” and “F takedown”. This build resolves the clash by using right-mouse for aim and F only for takedown, so the two actions cannot conflict. See README for the full note.</p>
+  <p class="small">Animation note: the character on screen is a procedural capsule. The 62 real Mixamo FBX clips in assets/animations/ are mapped in assets/animation-manifest.json and will play only once a compatible rigged model is added. They are not claimed to be playing on the capsule.</p>
+  <button id="startBtn">Click to infiltrate</button>
+  <p class="small">Click locks the mouse. Press Esc to release it. If you die or win, use the button on the end screen to restart.</p>
+</div></div>
+<script type="module">
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+// ---------- Animation manifest (embedded copy; file version is assets/animation-manifest.json) ----------
+const ANIM_MAP = {
+  idle:'Standing_Idle.fbx', walk:'Walking.fbx', run:'Running.fbx', sprint:'Standing_Sprint_Forward.fbx',
+  crouchIdle:'Crouch_Idle.fbx', crouchWalk:'Crouched_Walking.fbx', aimIdle:'Rifle_Aiming_Idle.fbx',
+  aimWalk:'Walking_While_Aiming_Rifle.fbx', aimPistol:'Pistol_Aim.fbx', fireRifle:'Firing_Rifle.fbx',
+  fireRifleCrouch:'Firing_Rifle_Crouch_Walking.fbx', reloadRifle:'Reloading_Rifle.fbx',
+  firePistol:'Shooting_Pistol.fbx', reloadPistol:'Reloading_Walking.fbx', sneak:'Sneaking_Forward.fbx',
+  crawl:'Crawling.fbx', cover:'Taking_Cover_Idle.fbx', punch:'Punching.fbx', kick:'Side_Kick.fbx',
+  hitReaction:'Hit_Reaction.fbx', death:'Death.fbx', deathRifle:'Rifle_Death.fbx', deathFallBack:'Falling_Back_Death.fbx',
+  knockedOut:'Knocked_Out.fbx', jump:'Jump.fbx', fall:'Falling.fbx', land:'Landing.fbx',
+  climb:'Climbing_Ladder.fbx', vault:'Vault_Over_Box.fbx', drive:'Driving.fbx', enterCar:'Entering_Car.fbx',
+  exitCar:'Exiting_Car.fbx', wave:'Waving.fbx', talk:'Talking.fbx', talkPhone:'Talking_On_A_Cell_Phone.fbx',
+  turn:'Turning.fbx', toRun:'Idle_To_Running.fbx'
+};
+// FBX loader stub. It only plays clips when a compatible rigged model is supplied later.
+// With no rigged model present (the normal prototype case) it returns cleanly and the
+// procedural capsule animation below is used. Nothing here invents a KYLE model file.
+let riggedModel = null; // set this later, e.g. window.__DOUBLE_AGENT_RIGGED_MODEL = model;
+const fbxLoader = new FBXLoader();
+const fbxClips = {};
+async function loadAnimationManifest() {
+  try {
+    const r = await fetch('assets/animation-manifest.json');
+    if (r.ok) { const j = await r.json(); console.info('[double-agent] manifest loaded,', Object.keys(j.actions || {}).length, 'actions'); return j; }
+  } catch (e) { console.info('[double-agent] manifest fetch unavailable (file:// or offline); using embedded ANIM_MAP'); }
+  return { actions: ANIM_MAP };
+}
+function tryLoadFBXAnimations(model) {
+  if (!model) { console.info('[double-agent] No rigged model present — using procedural capsule animation. FBX clips in assets/animations/ are ready for a future rigged model.'); return {}; }
+  riggedModel = model;
+  const mixer = new THREE.AnimationMixer(model);
+  for (const [action, file] of Object.entries(ANIM_MAP)) {
+    fbxLoader.load('assets/animations/' + file, (obj) => {
+      if (obj.animations && obj.animations[0]) fbxClips[action] = obj.animations[0];
+    }, undefined, () => {});
+  }
+  return { mixer, clips: fbxClips };
+}
+loadAnimationManifest();
+window.__doubleAgentFBX = { ANIM_MAP, tryLoadFBXAnimations, fbxClips };
+
+// ---------- Scene / level (all procedural, no external textures or models) ----------
+const canvas = document.getElementById('game');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87a5a0);
+scene.fog = new THREE.Fog(0x87a5a0, 60, 140);
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 300);
+const hemi = new THREE.HemisphereLight(0xdfefff, 0x334433, 0.9); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(30,50,20); sun.castShadow = true; scene.add(sun);
+
+function mat(c){ return new THREE.MeshStandardMaterial({ color:c, roughness:0.9 }); }
+const obstacles = []; // {mesh, minX,maxX,minZ,maxZ} for collision + LOS
+const losMeshes = [];
+function box(x,z,w,d,h,color,y){
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat(color));
+  m.position.set(x,(y===undefined?h/2:y),z); m.castShadow = true; m.receiveShadow = true; scene.add(m);
+  const o = { mesh:m, minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2, h };
+  obstacles.push(o); losMeshes.push(m); return o;
+}
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(90,90), mat(0x6f7d5a));
+ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; scene.add(ground);
+// Perimeter + courtyard structures. Coordinates are in metres, centre is (0,0).
+box(0,-42,90,2,4,0x555a55); box(0,42,90,2,4,0x555a55); box(-42,0,2,90,4,0x555a55); box(42,0,2,90,4,0x555a55);
+box(-20,-18,14,2,3,0x8a7a5a); box(18,-12,2,16,3,0x8a7a5a); box(-8,10,16,2,3,0x777777);
+box(22,18,12,2,3,0x777777); box(-28,24,2,12,3,0x8a7a5a); box(8,-26,18,2,3,0x777777);
+box(-14,0,3,3,1.2,0xa0824a); box(-10,2,3,3,1.2,0xa0824a); box(12,6,3,3,1.2,0xa0824a);
+box(30,-24,4,4,2,0x9a6a3a); box(-34,-28,4,4,2,0x9a6a3a); box(0,-34,10,6,5,0x5a6a7a);
+box(-32,8,8,8,6,0x5a6a7a); box(34,28,8,8,6,0x5a6a7a);
+// A parked car prop (visual only; drive clips are for a future vehicle system, not this courtyard)
+(function car(){
+  const g = new THREE.Group(); g.position.set(-24,0,32); g.rotation.y = 0.6;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(4.4,0.9,2), mat(0x223344)); body.position.y = 0.7; g.add(body);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(2.2,0.8,1.8), mat(0x334455)); cab.position.set(-0.2,1.5,0); g.add(cab);
+  scene.add(g);
+})();
+
+// ---------- Player (procedural capsule, NOT a rigged model) ----------
+const player = new THREE.Group(); scene.add(player);
+const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.45,0.9,4,12), mat(0x2a3a4a)); torso.position.y = 1.25; player.add(torso);
+const head = new THREE.Mesh(new THREE.SphereGeometry(0.32,16,12), mat(0xd8b08a)); head.position.y = 2.15; player.add(head);
+const gun = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.12,0.9), mat(0x111111)); gun.position.set(0.35,1.35,0.5); player.add(gun);
+const armL = new THREE.Mesh(new THREE.BoxGeometry(0.16,0.7,0.16), mat(0x2a3a4a)); armL.position.set(-0.55,1.35,0); player.add(armL);
+const armR = new THREE.Mesh(new THREE.BoxGeometry(0.16,0.7,0.16), mat(0x2a3a4a)); armR.position.set(0.55,1.35,0.3); player.add(armR);
+player.position.set(0,0,38);
+let yaw = Math.PI, pitch = 0.12, vy = 0, grounded = true, crouching = false, aiming = false;
+let health = 100, detection = 0, intel = 0, gameOver = false, won = false;
+let weapon = 'pistol'; // pistol | rifle
+const weapons = { pistol:{mag:12, max:12, dmg:34, rate:0.28}, rifle:{mag:30, max:30, dmg:50, rate:0.11} };
+let ammoInMag = 12, lastShot = 0, reloadUntil = 0, currentAnim = 'idle';
+
+// ---------- Intel, exfil ----------
+const intelObjs = [];
+[[-32,0,8],[0,-34,0],[34,28,0]].forEach(([x,z],i)=>{
+  const m = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.1,0.5), new THREE.MeshStandardMaterial({color:0xffe066, emissive:0xaa8800}));
+  m.position.set(x,1.1,z); scene.add(m); intelObjs.push({mesh:m, taken:false, x, z, i});
+});
+const exfil = new THREE.Mesh(new THREE.CylinderGeometry(4,4,0.2,24), new THREE.MeshStandardMaterial({color:0x22cc66, emissive:0x116633}));
+exfil.position.set(38,0.1,-38); scene.add(exfil);
+
+// ---------- Guards ----------
+function makeGuard(x,z,waypoints){
+  const g = new THREE.Group();
+  const b = new THREE.Mesh(new THREE.CapsuleGeometry(0.42,0.9,4,12), mat(0x772222)); b.position.y = 1.25; g.add(b);
+  const h = new THREE.Mesh(new THREE.SphereGeometry(0.3,14,10), mat(0xd8b08a)); h.position.y = 2.1; g.add(h);
+  const coneGeo = new THREE.ConeGeometry(3.2,10,20,1,true);
+  const coneMat = new THREE.MeshBasicMaterial({color:0xffff00, transparent:true, opacity:0.13, side:THREE.DoubleSide, depthWrite:false});
+  const cone = new THREE.Mesh(coneGeo, coneMat); cone.rotation.x = -Math.PI/2; cone.rotation.z = Math.PI/2; cone.position.set(0,1.2,5); g.add(cone);
+  g.position.set(x,0,z); scene.add(g);
+  return { group:g, mesh:b, cone, coneMat, waypoints, wp:0, yaw:0, hp:100, state:'PATROL', meter:0, lastKnown:null, searchT:0, alertT:0, shotT:0, dead:false };
+}
+const guards = [
+  makeGuard(-10,0,[[-10,0],[-10,-20],[10,-20],[10,0]]),
+  makeGuard(15,15,[[15,15],[28,15],[28,28],[15,28]]),
+  makeGuard(-25,-25,[[-25,-25],[-25,-5],[-35,-5]]),
+  makeGuard(25,-30,[[25,-30],[25,-10],[35,-10]]),
+  makeGuard(0,20,[[0,20],[-15,20],[0,30]])
+];
+// ---------- Cameras ----------
+const cameras = [];
+[[-20,-30],[28,0],[-5,32]].forEach(([x,z])=>{
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.15,4,8), mat(0x333333)); pole.position.set(x,2,z); scene.add(pole);
+  const headM = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.3,0.4), mat(0x222222)); headM.position.set(x,4.1,z); scene.add(headM);
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(3.5,12,20,1,true), new THREE.MeshBasicMaterial({color:0xff8800, transparent:true, opacity:0.10, side:THREE.DoubleSide, depthWrite:false}));
+  cone.rotation.x = -Math.PI/2; cone.rotation.z = Math.PI/2; cone.position.set(x,3.6,z+6); scene.add(cone);
+  cameras.push({x,z,head:headM,cone,yaw:0,dir:1});
+});
+
+function collides(nx,nz){
+  for (const o of obstacles) if (nx>o.minX-0.5 && nx<o.maxX+0.5 && nz>o.minZ-0.5 && nz<o.maxZ+0.5) return true;
+  if (Math.abs(nx)>41 || Math.abs(nz)>41) return true;
+  return false;
+}
+const ray = new THREE.Raycaster();
+function hasLOS(from,to){
+  const dir = new THREE.Vector3().subVectors(to,from); const dist = dir.length(); if (dist<0.01) return true;
+  ray.set(from, dir.normalize()); ray.far = dist;
+  const hits = ray.intersectObjects(losMeshes, false);
+  return hits.length===0;
+}
+function showMsg(t,ms){ const el=document.getElementById('msg'); el.textContent=t; el.style.display='block'; setTimeout(()=>el.style.display='none', ms||2600); }
+
+// ---------- Input ----------
+const keys = {};
+let locked = false;
+addEventListener('keydown', e=>{
+  keys[e.code]=true;
+  if (e.code==='KeyC') crouching = !crouching;
+  if (e.code==='Digit1'){ weapon='pistol'; ammoInMag = Math.min(ammoInMag,12); if (ammoInMag>12) ammoInMag=12; }
+  if (e.code==='Digit2'){ weapon='rifle'; ammoInMag = 30; }
+  if (e.code==='KeyR' && performance.now()>reloadUntil){ reloadUntil = performance.now()+1500; showMsg('Reloading…',1200); }
+  if (e.code==='KeyF') tryTakedown();
+  if (e.code==='KeyE') tryInteract();
+  if (e.code==='Space'){ e.preventDefault(); if (grounded){ vy=7.5; grounded=false; } }
+});
+addEventListener('keyup', e=>{ keys[e.code]=false; });
+addEventListener('mousemove', e=>{ if (!locked) return; yaw -= e.movementX*0.0022; pitch = Math.max(-0.9, Math.min(0.9, pitch - e.movementY*0.0022)); });
+addEventListener('mousedown', e=>{
+  if (!locked) return;
+  if (e.button===2) aiming = true;
+  if (e.button===0) tryShoot();
+});
+addEventListener('mouseup', e=>{ if (e.button===2) aiming=false; });
+addEventListener('contextmenu', e=>e.preventDefault());
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  document.getElementById('overlay').style.display='none';
+  canvas.requestPointerLock();
+});
+document.addEventListener('pointerlockchange', ()=>{ locked = document.pointerLockElement===canvas; if (!locked && !gameOver && !won) document.getElementById('overlay').style.display='flex'; });
+
+function noiseAlert(radius, isGun){
+  guards.forEach(g=>{
+    if (g.dead) return;
+    const d = g.group.position.distanceTo(player.position);
+    if (d<radius){ g.state='SEARCH'; g.lastKnown = player.position.clone(); g.searchT=0; if (isGun) g.meter=100; }
+  });
+}
+function tryShoot(){
+  const now = performance.now();
+  if (gameOver || won) return;
+  if (now<reloadUntil){ showMsg('Reloading…',800); return; }
+  const w = weapons[weapon];
+  if (now-lastShot < w.rate*1000) return;
+  if (ammoInMag<=0){ showMsg('Empty — press R to reload',1200); return; }
+  lastShot = now; ammoInMag--;
+  // Ray from camera centre.
+  const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  ray.set(camera.position, dir); ray.far = 60;
+  const targets = guards.filter(g=>!g.dead).map(g=>g.group);
+  const hits = ray.intersectObjects(targets, true);
+  if (hits.length){
+    const hit = hits[0]; let g = guards.find(x=>x.group===hit.object || x.group.children.includes(hit.object));
+    if (!g) g = guards.find(x=>hit.object.parent===x.group);
+    if (g){ g.hp -= w.dmg; g.meter = 100; g.state='ALERT'; g.lastKnown = player.position.clone();
+      if (g.hp<=0){ g.dead=true; g.group.rotation.x = -Math.PI/2; g.group.position.y = 0.4; showMsg('Guard down',1400); }
+      else showMsg('Hit!',700);
+    }
+  }
+  noiseAlert(26, true);
+}
+function tryTakedown(){
+  if (gameOver || won) return;
+  for (const g of guards){
+    if (g.dead) continue;
+    const d = g.group.position.distanceTo(player.position);
+    if (d>2.8) continue;
+    // Behind check: guard forward vs direction from guard to player.
+    const toPlayer = new THREE.Vector3().subVectors(player.position, g.group.position).normalize();
+    const fwd = new THREE.Vector3(Math.sin(g.yaw),0,Math.cos(g.yaw));
+    const behind = fwd.dot(toPlayer) < -0.6;
+    if (behind && g.state!=='ALERT' && g.meter<80){
+      g.dead=true; g.hp=0; g.group.rotation.x = -Math.PI/2; g.group.position.y = 0.4;
+      showMsg('Silent takedown — no alarm',1800); return;
+    }
+    if (behind) showMsg('Guard is alert — takedown blocked',1400); else showMsg('Get behind an unaware guard for a takedown',1400);
+    return;
+  }
+  showMsg('No guard in takedown range',1000);
+}
+function tryInteract(){
+  if (gameOver || won) return;
+  for (const o of intelObjs){
+    if (!o.taken && player.position.distanceTo(new THREE.Vector3(o.x,0,o.z))<2.5){
+      o.taken=true; intel++; o.mesh.visible=false; showMsg('Intel collected: '+intel+' / 3',1800); updateObjectives(); return;
+    }
+  }
+  if (player.position.distanceTo(new THREE.Vector3(38,0,-38))<5){
+    if (intel>=3){ won=true; endScreen('MISSION COMPLETE — you exfiltrated with all 3 intel.'); }
+    else showMsg('Exfil locked — collect all 3 intel first ('+intel+'/3)',2000);
+  }
+}
+function updateObjectives(){
+  for (let i=0;i<3;i++){ const el=document.getElementById('obj'+(i+1)); el.textContent = (intelObjs[i].taken?'✓ ':'○ ')+'Collect intel '+(i+1)+' / 3'; if (intelObjs[i].taken) el.className='done'; }
+}
+function endScreen(text){
+  gameOver=true; document.exitPointerLock && document.exitPointerLock();
+  const ov=document.getElementById('overlay'); ov.style.display='flex';
+  ov.querySelector('.box').innerHTML = '<h1>'+text+'</h1><p>Health: '+Math.max(0,Math.round(health))+' &nbsp; Intel: '+intel+'/3</p><button onclick="location.reload()">Play again</button>';
+}
+
+// ---------- Guard AI ----------
+function updateGuard(g, dt, now){
+  if (g.dead) return;
+  const p = player.position, gp = g.group.position;
+  const toP = new THREE.Vector3().subVectors(p,gp); const dist = toP.length(); toP.y=0; toP.normalize();
+  const fwd = new THREE.Vector3(Math.sin(g.yaw),0,Math.cos(g.yaw));
+  const angle = Math.acos(Math.max(-1,Math.min(1,fwd.dot(toP))));
+  const eye = new THREE.Vector3(gp.x,1.6,gp.z), target = new THREE.Vector3(p.x,1.4,p.z);
+  const seen = dist<19 && angle<0.65 && hasLOS(eye,target);
+  const crouchFactor = crouching ? 0.55 : 1;
+  const sprinting = keys['ShiftLeft'] || keys['ShiftRight'];
+  if (seen){
+    const gain = (dist<8?55:30) * crouchFactor * dt;
+    g.meter = Math.min(100, g.meter + gain);
+    g.lastKnown = p.clone();
+    if (g.meter>=100) g.state='ALERT';
+    else if (g.meter>25) g.state='SUSPICIOUS';
+  } else {
+    g.meter = Math.max(0, g.meter - 12*dt);
+    if (g.state==='ALERT'){ g.alertT += dt; if (g.alertT>4){ g.state='SEARCH'; g.alertT=0; g.searchT=0; } }
+    else if (g.state==='SUSPICIOUS' && g.meter<=5) g.state='PATROL';
+  }
+  // Hearing: sprinting nearby, or gunfire already handled by noiseAlert.
+  if (sprinting && dist<12 && !seen){ g.meter = Math.min(100, g.meter + 20*dt); if (g.meter>=60){ g.state='SEARCH'; g.lastKnown=p.clone(); } }
+  let speed = 0, desiredYaw = g.yaw;
+  if (g.state==='PATROL'){
+    const wp = g.waypoints[g.wp]; const dx=wp[0]-gp.x, dz=wp[1]-gp.z; const d=Math.hypot(dx,dz);
+    if (d<1){ g.wp=(g.wp+1)%g.waypoints.length; } else { desiredYaw=Math.atan2(dx,dz); speed=2; }
+  } else if (g.state==='SUSPICIOUS'){
+    desiredYaw = Math.atan2(toP.x,toP.z); speed=0.5;
+  } else if (g.state==='ALERT'){
+    if (g.lastKnown){ const dx=g.lastKnown.x-gp.x, dz=g.lastKnown.z-gp.z; const d=Math.hypot(dx,dz); desiredYaw=Math.atan2(dx,dz); speed = d>2?4.5:0;
+      if (seen && dist<22 && now-g.shotT>900){ g.shotT=now; health-=6; showMsg('Taking fire!',800); if (health<=0){ health=0; endScreen('MISSION FAILED — you were taken down.'); } }
+    }
+  } else if (g.state==='SEARCH'){
+    g.searchT += dt;
+    if (g.lastKnown){ const dx=g.lastKnown.x-gp.x, dz=g.lastKnown.z-gp.z; const d=Math.hypot(dx,dz); desiredYaw=Math.atan2(dx,dz); speed = d>1?3:0; }
+    if (g.searchT>6){ g.state='PATROL'; g.meter=0; }
+  }
+  // Smooth turn, then move with collision.
+  let dy = desiredYaw - g.yaw; while (dy>Math.PI) dy-=Math.PI*2; while (dy<-Math.PI) dy+=Math.PI*2;
+  g.yaw += dy * Math.min(1, dt*6);
+  if (speed>0){
+    const nx = gp.x + Math.sin(g.yaw)*speed*dt, nz = gp.z + Math.cos(g.yaw)*speed*dt;
+    if (!collides(nx,nz)){ gp.x=nx; gp.z=nz; }
+  }
+  g.group.rotation.y = g.yaw;
+  const detecting = seen || g.state==='ALERT';
+  g.coneMat.color.set(detecting?0xff2222:(g.state==='SUSPICIOUS'?0xffcc00:0xffff00));
+  g.coneMat.opacity = detecting?0.22:0.13;
+}
+function updateCameras(dt){
+  cameras.forEach((c,i)=>{
+    c.yaw += c.dir*dt*0.4; if (c.yaw>1.1||c.yaw<-1.1) c.dir*=-1;
+    c.head.rotation.y = c.yaw; c.cone.rotation.y = c.yaw;
+    const toP = new THREE.Vector3().subVectors(player.position, new THREE.Vector3(c.x,0,c.z));
+    const dist = toP.length();
+    const fwd = new THREE.Vector3(Math.sin(c.yaw),0,Math.cos(c.yaw));
+    const angle = Math.acos(Math.max(-1,Math.min(1,fwd.dot(toP.clone().normalize()))));
+    const seen = dist<16 && angle<0.6 && hasLOS(new THREE.Vector3(c.x,4,c.z), new THREE.Vector3(player.position.x,1.4,player.position.z));
+    if (seen && !gameOver && !won){
+      detection = Math.min(100, detection + 40*dt*(crouching?0.55:1));
+      if (detection>=100){ guards.forEach(g=>{ if(!g.dead){ g.state='ALERT'; g.lastKnown=player.position.clone(); g.meter=100; } }); }
+    }
+  });
+}
+
+// ---------- Player update, minimap, main loop ----------
+const clock = new THREE.Clock();
+const mini = document.getElementById('minimap').getContext('2d');
+function drawMinimap(){
+  mini.clearRect(0,0,190,190); mini.fillStyle='#0d1a12'; mini.fillRect(0,0,190,190);
+  const s = v => 95 + v*(95/45);
+  mini.fillStyle='#3a4a3a'; obstacles.forEach(o=>{ mini.fillRect(s(o.minX),s(o.minZ),s(o.maxX)-s(o.minX),s(o.maxZ)-s(o.minZ)); });
+  intelObjs.forEach(o=>{ if(!o.taken){ mini.fillStyle='#ffe066'; mini.beginPath(); mini.arc(s(o.x),s(o.z),4,0,7); mini.fill(); } });
+  mini.fillStyle='#22cc66'; mini.beginPath(); mini.arc(s(38),s(-38),6,0,7); mini.fill();
+  cameras.forEach(c=>{ mini.fillStyle='#ff8800'; mini.fillRect(s(c.x)-3,s(c.z)-3,6,6); });
+  guards.forEach(g=>{ if(!g.dead){ mini.fillStyle = g.state==='ALERT'?'#ff2222':'#ffcc00'; mini.beginPath(); mini.arc(s(g.group.position.x),s(g.group.position.z),4,0,7); mini.fill(); } });
+  mini.fillStyle='#57d977'; mini.save(); mini.translate(s(player.position.x),s(player.position.z)); mini.rotate(-yaw+Math.PI); mini.beginPath(); mini.moveTo(0,-7); mini.lineTo(5,5); mini.lineTo(-5,5); mini.closePath(); mini.fill(); mini.restore();
+}
+function animStateName(moving, sprinting){
+  if (!grounded) return vy>0?'jump':'fall';
+  if (aiming) return moving?'aimWalk':'aimIdle';
+  if (crouching) return moving?'crouchWalk':'crouchIdle';
+  if (sprinting && moving) return 'sprint';
+  if (moving) return crouching?'sneak':'walk';
+  return 'idle';
+}
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(0.05, clock.getDelta()); const now = performance.now();
+  if (!gameOver && !won && locked){
+    const sprinting = (keys['ShiftLeft']||keys['ShiftRight']) && !crouching;
+    let speed = crouching?2:(sprinting?7:(aiming?2.5:4.2));
+    let fx=0, fz=0;
+    if (keys['KeyW']) fz+=1; if (keys['KeyS']) fz-=1; if (keys['KeyA']) fx-=1; if (keys['KeyD']) fx+=1;
+    const moving = fx!==0 || fz!==0;
+    if (moving){ const len=Math.hypot(fx,fz); fx/=len; fz/=len;
+      const sin=Math.sin(yaw), cos=Math.cos(yaw);
+      const dx=(fx*cos+fz*sin)*speed*dt, dz=(-fx*sin+fz*cos)*speed*dt;
+      const nx=player.position.x+dx, nz=player.position.z+dz;
+      if (!collides(nx,player.position.z)) player.position.x=nx;
+      if (!collides(player.position.x,nz)) player.position.z=nz;
+    }
+    // Vertical physics.
+    vy -= 22*dt; player.position.y += vy*dt;
+    if (player.position.y<=0){ player.position.y=0; vy=0; if(!grounded){ grounded=true; } }
+    else grounded=false;
+    if (now>reloadUntil && reloadUntil!==0){ ammoInMag=weapons[weapon].max; reloadUntil=0; }
+    // Procedural capsule animation: bob + arm swing. This is NOT FBX playback.
+    const t = now*0.001; const bob = moving?Math.abs(Math.sin(t*(sprinting?11:7)))*0.08:0;
+    torso.position.y = (crouching?0.95:1.25)+bob; head.position.y = (crouching?1.75:2.15)+bob;
+    player.scale.y = crouching?0.82:1;
+    armL.rotation.x = moving?Math.sin(t*7)*0.6:0; armR.rotation.x = aiming?-1.2:(moving?-Math.sin(t*7)*0.6:0);
+    gun.position.set(aiming?0.22:0.35, aiming?1.45:1.35, 0.5);
+    gun.visible = true;
+    player.rotation.y = yaw;
+    currentAnim = animStateName(moving, sprinting);
+    guards.forEach(g=>updateGuard(g,dt,now));
+    updateCameras(dt);
+    // Global detection is the worst guard meter (cameras add on top).
+    let worst = detection; guards.forEach(g=>{ worst=Math.max(worst,g.meter); });
+    detection = worst;
+    if (detection<100 && !guards.some(g=>g.state==='ALERT')) detection = Math.max(0, detection - 8*dt);
+  }
+  // Over-the-shoulder camera.
+  const back = new THREE.Vector3(Math.sin(yaw),0,Math.cos(yaw));
+  const right = new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw));
+  const camPos = player.position.clone().addScaledVector(back, aiming?2.2:3.4).addScaledVector(right, aiming?0.9:1.1);
+  camPos.y = player.position.y + (crouching?1.6:2.1) + Math.sin(pitch)*1.2;
+  camera.position.lerp(camPos, 0.35);
+  camera.lookAt(player.position.x - Math.sin(yaw)*8, player.position.y+1.5+Math.sin(pitch)*8, player.position.z - Math.cos(yaw)*8);
+  // HUD.
+  document.getElementById('healthBar').style.width = Math.max(0,health)+'%';
+  document.getElementById('detectFill').style.width = Math.round(detection)+'%';
+  document.getElementById('detectFill').style.background = detection>=100?'#ff2222':(detection>=30?'#ffcc00':'#57d977');
+  const anyAlert = guards.some(g=>g.state==='ALERT');
+  document.getElementById('stateText').textContent = anyAlert?'ALERT':(detection>=30?'CAUTION':(detection>0?'SUSPICIOUS':'UNDETECTED'));
+  document.getElementById('weaponText').textContent = weapon==='pistol'?'Pistol':'Rifle';
+  document.getElementById('ammoText').textContent = 'Ammo: '+ammoInMag+' / '+weapons[weapon].max + (now<reloadUntil?' (reloading)':'');
+  document.getElementById('animText').textContent = 'Anim: '+currentAnim+' (procedural capsule) — FBX ready: '+(ANIM_MAP[currentAnim]||'—');
+  document.getElementById('posText').textContent = 'Intel: '+intel+'/3  •  X '+player.position.x.toFixed(0)+' Z '+player.position.z.toFixed(0);
+  drawMinimap();
+  renderer.render(scene,camera);
+}
+addEventListener('resize', ()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+animate();
+</script>
+</body>
+</html>
