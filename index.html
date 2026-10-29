@@ -60,16 +60,17 @@
   <ul>
     <li><b>W A S D</b> move &nbsp; <b>Mouse</b> look &nbsp; <b>Shift</b> sprint (loud) &nbsp; <b>C</b> crouch / sneak &nbsp; <b>Space</b> jump</li>
     <li>Hold <b>Right-mouse</b> to aim.</li>
-    <li><b>Click</b> fire &nbsp; <b>R</b> reload &nbsp; <b>1</b> pistol &nbsp; <b>2</b> rifle &nbsp; <b>E</b> interact / pick up intel &nbsp; <b>F</b> silent takedown from behind an unaware guard</li>
+    <li><b>Click</b> fire &nbsp; <b>R</b> reload &nbsp; <b>1</b> pistol &nbsp; <b>2</b> rifle &nbsp; <b>L</b> toggle player loadout (white / black set) &nbsp; <b>E</b> interact / pick up intel &nbsp; <b>F</b> silent takedown from behind an unaware guard</li>
   </ul>
   <p class="warn">Note on controls: the brief asked for both “F aim” and “F takedown”. This build resolves the clash by using right-mouse for aim and F only for takedown, so the two actions cannot conflict. See README for the full note.</p>
-  <p class="small">Animation note: the character on screen is a procedural capsule. The 62 real Mixamo FBX clips in assets/animations/ are mapped in assets/animation-manifest.json and will play only once a compatible rigged model is added. They are not claimed to be playing on the capsule.</p>
+  <p class="small">Models: guards use enemy-terror1–4.fbx, player weapons are the white_ / black_ sets (press L to toggle sets), and Agent.fbx — your player model — replaces the capsule automatically once you place it in assets/. Until Agent.fbx is uploaded there, the player is a procedural capsule. The 62 Mixamo FBX clips in assets/animations/ are mapped in assets/animation-manifest.json and will play on Agent.fbx once it is present. They are not claimed to be playing on the capsule.</p>
   <button id="startBtn">Click to infiltrate</button>
   <p class="small">Click locks the mouse. Press Esc to release it. If you die or win, use the button on the end screen to restart.</p>
 </div></div>
 <script type="module">
 import * as THREE from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ---------- Animation manifest (embedded copy; file version is assets/animation-manifest.json) ----------
 const ANIM_MAP = {
@@ -111,6 +112,45 @@ function tryLoadFBXAnimations(model) {
 }
 loadAnimationManifest();
 window.__doubleAgentFBX = { ANIM_MAP, tryLoadFBXAnimations, fbxClips };
+
+// ---------- Real-model helpers ----------
+// Scaling assumptions (Kyle should check these in-game — see README):
+// - Mixamo FBX characters are normalised by bounding box to ~2.2 m tall,
+//   feet on the ground, centred on the group origin. Player models face
+//   away from the camera, so the player model gets a PI yaw offset inside
+//   its group; guard models face the same way as their vision cone (+Z
+//   local), so they get no extra offset.
+// - GLB weapons are normalised by bounding box so their longest dimension
+//   lies along Z (barrel forward) and is ~0.32 m for pistols, ~0.60 m for
+//   rifles/SMGs. The barrel-vs-stock direction cannot be known from the
+//   file alone — if a weapon points backwards in-game, flip its pivot.
+// - Every loader below has an onError fallback that keeps the existing
+//   procedural capsule / box gun, so a missing or bad file never breaks
+//   the game. The ONLY file that may legitimately be missing is
+//   assets/Agent.fbx (not yet uploaded to assets/).
+const gltfLoader = new GLTFLoader();
+function normalizeCharacter(obj, targetHeight, yawOffset){
+  obj.traverse((o)=>{ if (o.isMesh) o.castShadow = true; });
+  obj.rotation.y = yawOffset || 0;
+  let box = new THREE.Box3().setFromObject(obj); const size = new THREE.Vector3(); box.getSize(size);
+  if (!size.y || size.y <= 0) return false;
+  obj.scale.setScalar(targetHeight / size.y);
+  box = new THREE.Box3().setFromObject(obj); const c = new THREE.Vector3(); box.getCenter(c);
+  obj.position.set(-c.x, -box.min.y, -c.z);
+  return true;
+}
+function fitWeapon(obj, targetLength){
+  obj.traverse((o)=>{ if (o.isMesh) o.castShadow = true; });
+  let box = new THREE.Box3().setFromObject(obj); const size = new THREE.Vector3(); box.getSize(size);
+  if (size.x > size.z && size.x >= size.y) obj.rotation.y = Math.PI / 2;
+  box = new THREE.Box3().setFromObject(obj); box.getSize(size);
+  const longest = Math.max(size.x, size.y, size.z);
+  if (!longest || longest <= 0) return false;
+  obj.scale.setScalar(targetLength / longest);
+  box = new THREE.Box3().setFromObject(obj); const c = new THREE.Vector3(); box.getCenter(c);
+  obj.position.set(-c.x, -c.y, -c.z);
+  return true;
+}
 
 // ---------- Scene / level (all procedural, no external textures or models) ----------
 const canvas = document.getElementById('game');
@@ -168,6 +208,52 @@ let weapon = 'pistol'; // pistol | rifle
 const weapons = { pistol:{mag:12, max:12, dmg:34, rate:0.28}, rifle:{mag:30, max:30, dmg:50, rate:0.11} };
 let ammoInMag = 12, lastShot = 0, reloadUntil = 0, currentAnim = 'idle';
 
+// ---------- Real player models (with capsule / box-gun fallbacks) ----------
+// WEAPON SPLIT (user-corrected, standing): unprefixed GLBs are ENEMY
+// weapons. The player uses ONLY the white_ and black_ sets, as two
+// distinct loadouts. Do not assign ppk.glb / mp5k.glb / aks74u.glb /
+// rpg.glb to the player — those belong to guards.
+let agentModel = null;
+const capsuleParts = [torso, head, armL, armR];
+fbxLoader.load('assets/Agent.fbx', (obj)=>{
+  if (!normalizeCharacter(obj, 2.2, Math.PI)) return;
+  capsuleParts.forEach((p)=>{ p.visible = false; });
+  agentModel = obj; player.add(obj);
+  tryLoadFBXAnimations(obj);
+  console.info('[double-agent] Agent.fbx loaded as player model');
+}, undefined, ()=>{
+  console.info('[double-agent] assets/Agent.fbx not found — using procedural capsule for the player. Place Agent.fbx in assets/ to replace it.');
+});
+let playerLoadout = 'white'; // 'white' | 'black' — two distinct player sets
+const PLAYER_LOADOUTS = {
+  white: { pistol: 'white_glock.glb', rifle: 'white_mp5k.glb' },
+  black: { pistol: 'black_glock_threaded.glb', rifle: 'black_mp5k.glb' }
+};
+const weaponPivots = { white: { pistol: null, rifle: null }, black: { pistol: null, rifle: null } };
+function updateWeaponVisibility(){
+  Object.values(weaponPivots).forEach((set)=>{ Object.values(set).forEach((p)=>{ if (p) p.visible = false; }); });
+  const pivot = weaponPivots[playerLoadout] ? weaponPivots[playerLoadout][weapon] : null;
+  if (pivot) pivot.visible = true;
+  gun.visible = !pivot;
+}
+function loadPlayerWeapon(set, slot, file, targetLength){
+  gltfLoader.load('assets/' + file, (gltf)=>{
+    const pivot = new THREE.Group(); pivot.add(gltf.scene);
+    if (!fitWeapon(gltf.scene, targetLength)) return;
+    pivot.position.set(0.35, 1.35, 0.5); pivot.visible = false; player.add(pivot);
+    weaponPivots[set][slot] = pivot; updateWeaponVisibility();
+    console.info('[double-agent] player weapon loaded:', set, slot, file);
+  }, undefined, ()=>{
+    console.warn('[double-agent] player weapon failed, keeping box gun:', file);
+    updateWeaponVisibility();
+  });
+}
+loadPlayerWeapon('white', 'pistol', PLAYER_LOADOUTS.white.pistol, 0.32);
+loadPlayerWeapon('white', 'rifle', PLAYER_LOADOUTS.white.rifle, 0.60);
+loadPlayerWeapon('black', 'pistol', PLAYER_LOADOUTS.black.pistol, 0.32);
+loadPlayerWeapon('black', 'rifle', PLAYER_LOADOUTS.black.rifle, 0.60);
+updateWeaponVisibility();
+
 // ---------- Intel, exfil ----------
 const intelObjs = [];
 [[-32,0,8],[0,-34,0],[34,28,0]].forEach(([x,z],i)=>{
@@ -186,7 +272,7 @@ function makeGuard(x,z,waypoints){
   const coneMat = new THREE.MeshBasicMaterial({color:0xffff00, transparent:true, opacity:0.13, side:THREE.DoubleSide, depthWrite:false});
   const cone = new THREE.Mesh(coneGeo, coneMat); cone.rotation.x = -Math.PI/2; cone.rotation.z = Math.PI/2; cone.position.set(0,1.2,5); g.add(cone);
   g.position.set(x,0,z); scene.add(g);
-  return { group:g, mesh:b, cone, coneMat, waypoints, wp:0, yaw:0, hp:100, state:'PATROL', meter:0, lastKnown:null, searchT:0, alertT:0, shotT:0, dead:false };
+  return { group:g, mesh:b, capsuleBody:b, capsuleHead:h, cone, coneMat, waypoints, wp:0, yaw:0, hp:100, state:'PATROL', meter:0, lastKnown:null, searchT:0, alertT:0, shotT:0, dead:false, realModel:null, enemyWeapon:null };
 }
 const guards = [
   makeGuard(-10,0,[[-10,0],[-10,-20],[10,-20],[10,0]]),
@@ -195,6 +281,27 @@ const guards = [
   makeGuard(25,-30,[[25,-30],[25,-10],[35,-10]]),
   makeGuard(0,20,[[0,20],[0,30],[15,20]])
 ];
+// ---------- Real guard models + enemy weapons (with capsule fallback) ----------
+// One enemy model per guard, cycling 1-4, fifth guard reuses terror1.
+// Enemy weapons are the UNPREFIXED GLBs (mp5k.glb here, visual only —
+// guard shooting logic is unchanged). Player sets never use these files.
+const ENEMY_MODELS = ['enemy-terror1.fbx', 'enemy-terror2.fbx', 'enemy-terror3.fbx', 'enemy-terror4.fbx'];
+guards.forEach((g, i)=>{
+  const file = ENEMY_MODELS[i % ENEMY_MODELS.length];
+  fbxLoader.load('assets/' + file, (obj)=>{
+    if (!normalizeCharacter(obj, 2.2, 0)) return;
+    g.capsuleBody.visible = false; g.capsuleHead.visible = false;
+    g.realModel = obj; g.group.add(obj);
+    console.info('[double-agent] guard', i, 'model loaded:', file);
+  }, undefined, ()=>{
+    console.warn('[double-agent] guard', i, 'model failed, keeping capsule:', file);
+  });
+  gltfLoader.load('assets/mp5k.glb', (gltf)=>{
+    const pivot = new THREE.Group(); pivot.add(gltf.scene);
+    if (!fitWeapon(gltf.scene, 0.60)) return;
+    pivot.position.set(0.45, 1.30, 0.25); g.group.add(pivot); g.enemyWeapon = pivot;
+  }, undefined, ()=>{ /* enemy weapon is visual only; capsule guard still works */ });
+});
 // ---------- Cameras ----------
 const cameras = [];
 [[-20,-30],[28,0],[-5,32]].forEach(([x,z])=>{
@@ -225,8 +332,9 @@ let locked = false;
 addEventListener('keydown', e=>{
   keys[e.code]=true;
   if (e.code==='KeyC') crouching = !crouching;
-  if (e.code==='Digit1'){ weapon='pistol'; ammoInMag = Math.min(ammoInMag,12); if (ammoInMag>12) ammoInMag=12; }
-  if (e.code==='Digit2'){ weapon='rifle'; ammoInMag = 30; }
+  if (e.code==='Digit1'){ weapon='pistol'; ammoInMag = Math.min(ammoInMag,12); if (ammoInMag>12) ammoInMag=12; updateWeaponVisibility(); }
+  if (e.code==='Digit2'){ weapon='rifle'; ammoInMag = 30; updateWeaponVisibility(); }
+  if (e.code==='KeyL'){ playerLoadout = playerLoadout==='white' ? 'black' : 'white'; updateWeaponVisibility(); showMsg('Loadout: ' + playerLoadout + ' set', 1400); }
   if (e.code==='KeyR' && performance.now()>reloadUntil){ reloadUntil = performance.now()+1500; showMsg('Reloading…',1200); }
   if (e.code==='KeyF') tryTakedown();
   if (e.code==='KeyE') tryInteract();
@@ -268,8 +376,10 @@ function tryShoot(){
   const targets = guards.filter(g=>!g.dead).map(g=>g.group);
   const hits = ray.intersectObjects(targets, true);
   if (hits.length){
-    const hit = hits[0]; let g = guards.find(x=>x.group===hit.object || x.group.children.includes(hit.object));
-    if (!g) g = guards.find(x=>hit.object.parent===x.group);
+    // Walk up the parent chain: a hit on a real enemy FBX mesh or its
+    // weapon is nested several levels below the guard group.
+    let node = hits[0].object; let g = null;
+    while (node){ g = guards.find(x=>x.group===node); if (g) break; node = node.parent; }
     if (g){ g.hp -= w.dmg; g.meter = 100; g.state='ALERT'; g.lastKnown = player.position.clone();
       if (g.hp<=0){ g.dead=true; g.group.rotation.x = -Math.PI/2; g.group.position.y = 0.4; showMsg('Guard down',1400); }
       else showMsg('Hit!',700);
@@ -432,7 +542,11 @@ function animate(){
     player.scale.y = crouching?0.82:1;
     armL.rotation.x = moving?Math.sin(t*7)*0.6:0; armR.rotation.x = aiming?-1.2:(moving?-Math.sin(t*7)*0.6:0);
     gun.position.set(aiming?0.22:0.35, aiming?1.45:1.35, 0.5);
-    gun.visible = true;
+    // Real weapon pivot (if loaded) replaces the box gun; otherwise the
+    // box gun stays visible. Do not force gun.visible = true here.
+    const _pivot = weaponPivots[playerLoadout] ? weaponPivots[playerLoadout][weapon] : null;
+    if (_pivot){ _pivot.visible = true; _pivot.position.set(aiming?0.22:0.35, aiming?1.45:1.35, 0.5); gun.visible = false; }
+    else gun.visible = true;
     player.rotation.y = yaw;
     currentAnim = animStateName(moving, sprinting);
     guards.forEach(g=>updateGuard(g,dt,now));
@@ -455,9 +569,9 @@ function animate(){
   document.getElementById('detectFill').style.background = detection>=100?'#ff2222':(detection>=30?'#ffcc00':'#57d977');
   const anyAlert = guards.some(g=>g.state==='ALERT');
   document.getElementById('stateText').textContent = anyAlert?'ALERT':(detection>=30?'CAUTION':(detection>0?'SUSPICIOUS':'UNDETECTED'));
-  document.getElementById('weaponText').textContent = weapon==='pistol'?'Pistol':'Rifle';
+  document.getElementById('weaponText').textContent = (weapon==='pistol'?'Pistol':'Rifle') + ' · ' + playerLoadout + ' set';
   document.getElementById('ammoText').textContent = 'Ammo: '+ammoInMag+' / '+weapons[weapon].max + (now<reloadUntil?' (reloading)':'');
-  document.getElementById('animText').textContent = 'Anim: '+currentAnim+' (procedural capsule) — FBX ready: '+(ANIM_MAP[currentAnim]||'—');
+  document.getElementById('animText').textContent = 'Anim: '+currentAnim+' ('+(agentModel ? 'Agent.fbx' : 'procedural capsule')+') — FBX ready: '+(ANIM_MAP[currentAnim]||'—');
   document.getElementById('posText').textContent = 'Intel: '+intel+'/3  •  X '+player.position.x.toFixed(0)+' Z '+player.position.z.toFixed(0);
   drawMinimap();
   renderer.render(scene,camera);
